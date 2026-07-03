@@ -8,12 +8,13 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import logging, re, hashlib, json, os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Syrian Rates API")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,57 +24,112 @@ app.add_middleware(
 
 ADMIN_PASSWORD_HASH = "04067de8cf70fc76077836b9f28020fc7214e866437ed7071a66bd9efb450d17"
 ADMIN_TOKEN = hashlib.sha256((ADMIN_PASSWORD_HASH + "syprate-fixed-salt").encode()).hexdigest()
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# ─── الحفظ الدائم: ملف + متغير بيئة كنسخة احتياطية ──
-DATA_FILE = "/tmp/rates_data.json"
-BACKUP_KEY = "RATES_BACKUP"
+# ─── PostgreSQL ───────────────────────────────────
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
 
-def load_cached():
-    # 1. حاول الملف أولاً
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if data.get("status") == "ok":
-                    logger.info("✅ تم تحميل البيانات من الملف")
-                    return data
-        except Exception as e:
-            logger.warning(f"⚠️ فشل قراءة الملف: {e}")
-
-    # 2. نسخة احتياطية من متغير البيئة
-    backup = os.environ.get(BACKUP_KEY, "")
-    if backup:
-        try:
-            data = json.loads(backup)
-            if data.get("status") == "ok":
-                logger.info("✅ تم تحميل البيانات من متغير البيئة")
-                save_to_file(data)
-                return data
-        except Exception as e:
-            logger.warning(f"⚠️ فشل قراءة متغير البيئة: {e}")
-
-    return {
-        "buy": None, "sell": None, "mid": None,
-        "date": None, "updated_at": None,
-        "source": "مصرف سوريا المركزي",
-        "status": "initializing",
-        "manual": False,
-        "bulletin_no": None,
-        "bulletin_url": None,
-        "currencies": {}
-    }
-
-def save_to_file(data):
+def init_db():
+    if not DATABASE_URL:
+        logger.warning("⚠️ DATABASE_URL غير موجود")
+        return
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS rates (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS visits (
+                        key TEXT PRIMARY KEY,
+                        value INTEGER DEFAULT 0,
+                        date TEXT DEFAULT ''
+                    )
+                """)
+                # أدخل قيم أولية لو مو موجودة
+                cur.execute("INSERT INTO visits (key,value,date) VALUES ('total',0,'') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO visits (key,value,date) VALUES ('today',0,'') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO visits (key,value,date) VALUES ('today_date','0','') ON CONFLICT DO NOTHING")
+        logger.info("✅ قاعدة البيانات جاهزة")
     except Exception as e:
-        logger.error(f"❌ فشل حفظ الملف: {e}")
+        logger.error(f"❌ فشل تهيئة قاعدة البيانات: {e}")
 
-def save_cached():
-    save_to_file(cached)
+def db_save(data: dict):
+    if not DATABASE_URL:
+        return
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO rates (key, value, updated_at)
+                    VALUES ('cached', %s, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
+                """, (json.dumps(data, ensure_ascii=False),))
+        logger.info("✅ تم الحفظ بقاعدة البيانات")
+    except Exception as e:
+        logger.error(f"❌ فشل الحفظ: {e}")
 
-cached = load_cached()
+def db_load() -> dict:
+    if not DATABASE_URL:
+        return {}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM rates WHERE key = 'cached'")
+                row = cur.fetchone()
+                if row:
+                    data = json.loads(row[0])
+                    logger.info("✅ تم تحميل البيانات من قاعدة البيانات")
+                    return data
+    except Exception as e:
+        logger.error(f"❌ فشل التحميل: {e}")
+    return {}
+
+def db_visit():
+    if not DATABASE_URL:
+        return {"total": 0, "today": 0}
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # شيك إذا تغير اليوم
+                cur.execute("SELECT value FROM visits WHERE key='today_date'")
+                row = cur.fetchone()
+                stored_date = row[0] if row else ""
+                if stored_date != today:
+                    cur.execute("UPDATE visits SET value=0, date=%s WHERE key='today'", (today,))
+                    cur.execute("UPDATE visits SET value=%s WHERE key='today_date'", (today,))
+                # زود العدادين
+                cur.execute("UPDATE visits SET value=value+1 WHERE key='total' RETURNING value")
+                total = cur.fetchone()[0]
+                cur.execute("UPDATE visits SET value=value+1 WHERE key='today' RETURNING value")
+                today_count = cur.fetchone()[0]
+        return {"total": total, "today": today_count}
+    except Exception as e:
+        logger.error(f"❌ فشل تسجيل الزيارة: {e}")
+        return {"total": 0, "today": 0}
+
+# ─── الحالة الافتراضية ───────────────────────────
+DEFAULT_CACHED = {
+    "buy": None, "sell": None, "mid": None,
+    "date": None, "updated_at": None,
+    "source": "مصرف سوريا المركزي",
+    "status": "initializing",
+    "manual": False,
+    "bulletin_no": None,
+    "bulletin_url": None,
+    "currencies": {}
+}
+
+init_db()
+loaded = db_load()
+cached = loaded if loaded.get("status") == "ok" else DEFAULT_CACHED.copy()
 
 # ─── SCRAPER ─────────────────────────────────────
 CB_URL = "https://cb.gov.sy/index.php?page=list&ex=2&dir=exchangerate&lang=1&service=4&act=1207"
@@ -120,7 +176,7 @@ def fetch_rates():
                     "updated_at": datetime.utcnow().isoformat() + "Z",
                     "status": "ok", "manual": False
                 })
-                save_cached()
+                db_save(cached)
                 logger.info(f"✅ شراء={buy} مبيع={sell}")
                 return
         logger.warning("⚠️ لم يُعثر على بيانات")
@@ -136,38 +192,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if credentials.credentials != ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="غير مصرح")
     return True
-
-# ─── عداد الزوار ──────────────────────────────────
-VISITS_FILE = "/tmp/visits.json"
-
-def load_visits():
-    if os.path.exists(VISITS_FILE):
-        try:
-            with open(VISITS_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {"total": 0, "today": 0, "today_date": ""}
-
-def save_visits(v):
-    try:
-        with open(VISITS_FILE, "w") as f:
-            json.dump(v, f)
-    except:
-        pass
-
-visits = load_visits()
-
-@app.get("/api/visit")
-def record_visit():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if visits["today_date"] != today:
-        visits["today"] = 0
-        visits["today_date"] = today
-    visits["total"] += 1
-    visits["today"] += 1
-    save_visits(visits)
-    return {"total": visits["total"], "today": visits["today"]}
 
 
 class LoginRequest(BaseModel):
@@ -196,8 +220,11 @@ def get_rates():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "cached_status": cached["status"], "last_updated": cached["updated_at"]}
+    return {"status": "ok", "cached_status": cached["status"], "last_updated": cached["updated_at"], "db": bool(DATABASE_URL)}
 
+@app.get("/api/visit")
+def record_visit():
+    return db_visit()
 
 @app.post("/admin/login")
 def admin_login(req: LoginRequest):
@@ -223,8 +250,8 @@ def update_rates(data: RatesUpdate, auth: bool = Depends(verify_token)):
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "status": "ok", "manual": True
     })
-    save_cached()
-    logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell} نشرة={data.bulletin_no}")
+    db_save(cached)
+    logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell}")
     return {"success": True, "data": cached}
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -272,14 +299,12 @@ input:focus,textarea:focus{border-color:#22c55e}
 <div class="card">
   <h1>🛡️ لوحة التحكم</h1>
   <div class="sub">محول العملة السورية — Admin Only</div>
-
   <div id="loginSection">
     <label>كلمة السر</label>
     <input type="password" id="passInput" placeholder="••••••••" onkeydown="if(event.key==='Enter')login()"/>
     <button class="btn" onclick="login()">دخول</button>
     <div class="msg" id="loginMsg"></div>
   </div>
-
   <div id="ratesSection">
     <div class="current-rates">
       <div class="cr-row"><span class="cr-label">آخر تحديث</span><span class="cr-value" id="crDate">—</span></div>
@@ -288,13 +313,11 @@ input:focus,textarea:focus{border-color:#22c55e}
       <div class="cr-row"><span class="cr-label">مبيع الدولار</span><span class="cr-value" id="crSell">—</span></div>
       <div class="cr-row"><span class="cr-label">المصدر</span><span id="crManual">—</span></div>
     </div>
-
     <div class="section-h">💵 الدولار الأمريكي</div>
     <label>سعر الشراء (Buy)</label>
     <input type="number" id="buyInput" placeholder="121.50" step="0.01"/>
     <label>سعر المبيع (Sell)</label>
     <input type="number" id="sellInput" placeholder="122.50" step="0.01"/>
-
     <div class="section-h">📋 معلومات النشرة</div>
     <label>تاريخ النشرة</label>
     <input type="date" id="dateInput"/>
@@ -302,30 +325,24 @@ input:focus,textarea:focus{border-color:#22c55e}
     <input type="text" id="bulletinNoInput" placeholder="119"/>
     <label>رابط النشرة (PDF)</label>
     <input type="text" id="bulletinUrlInput" placeholder="https://cb.gov.sy/downloads/files/xxxx.PDF"/>
-
     <div class="section-h">⚡ لصق سريع من النشرة</div>
     <label style="font-weight:400;color:#6b8f7a">انسخ سطر كل عملة (6 أرقام) — بياخد عمود الليرة الجديدة تلقائياً</label>
     <textarea id="pasteArea" rows="6" placeholder="USD 12200 12250 12150 122.00 122.50 121.50&#10;EUR 13928.74 13998.04 13859.44 139.29 139.98 138.59"></textarea>
     <button class="btn" style="background:#1e3a5f;margin-top:0" onclick="parsePaste()">⚡ تحليل ولصق بالحقول</button>
     <div class="msg" id="pasteMsg"></div>
-
     <div class="section-h">🌍 باقي العملات</div>
-    <div class="curr-header">
-      <span></span><span>شراء</span><span>مبيع</span>
-    </div>
+    <div class="curr-header"><span></span><span>شراء</span><span>مبيع</span></div>
     <div id="currenciesGrid"></div>
-
     <button class="btn" onclick="updateRates()">💾 حفظ وتحديث الموقع</button>
     <div class="msg" id="ratesMsg"></div>
     <hr class="divider"/>
     <button class="btn" style="background:#1a3a25;color:#86efac" onclick="logout()">تسجيل الخروج</button>
   </div>
 </div>
-
 <script>
-let TOKEN = localStorage.getItem('adminToken') || '';
-const API = '';
-const BULLETIN_CURRENCIES = [
+let TOKEN=localStorage.getItem('adminToken')||'';
+const API='';
+const BULLETIN_CURRENCIES=[
   {code:'EUR',name:'يورو'},{code:'GBP',name:'جنيه إسترليني'},
   {code:'CHF',name:'فرنك سويسري'},{code:'JPY',name:'ين ياباني'},
   {code:'CNY',name:'يوان صيني'},{code:'TRY',name:'ليرة تركية'},
@@ -337,126 +354,86 @@ const BULLETIN_CURRENCIES = [
   {code:'SEK',name:'كرونة سويدية'},{code:'NOK',name:'كرونة نرويجية'},
   {code:'AUD',name:'دولار أسترالي'},{code:'RUB',name:'روبل روسي'},
 ];
-const KNOWN_CODES = ['USD',...BULLETIN_CURRENCIES.map(c=>c.code)];
-
-function buildCurrenciesGrid() {
-  const grid = document.getElementById('currenciesGrid');
-  grid.innerHTML = '';
-  BULLETIN_CURRENCIES.forEach(c => {
-    const row = document.createElement('div');
-    row.className = 'curr-grid';
-    row.innerHTML = `<div class="curr-code">${c.code}</div>
-      <input type="number" step="0.01" id="cur_${c.code}_buy" placeholder="شراء"/>
-      <input type="number" step="0.01" id="cur_${c.code}_sell" placeholder="مبيع"/>`;
+const KNOWN_CODES=['USD',...BULLETIN_CURRENCIES.map(c=>c.code)];
+function buildCurrenciesGrid(){
+  const grid=document.getElementById('currenciesGrid');
+  grid.innerHTML='';
+  BULLETIN_CURRENCIES.forEach(c=>{
+    const row=document.createElement('div');
+    row.className='curr-grid';
+    row.innerHTML=`<div class="curr-code">${c.code}</div><input type="number" step="0.01" id="cur_${c.code}_buy" placeholder="شراء"/><input type="number" step="0.01" id="cur_${c.code}_sell" placeholder="مبيع"/>`;
     grid.appendChild(row);
   });
 }
 buildCurrenciesGrid();
-
-function parsePaste() {
-  const text = document.getElementById('pasteArea').value;
-  const msg = document.getElementById('pasteMsg');
-  if (!text.trim()) { showMsg(msg,'الصق النص أول','err'); return; }
-  const lines = text.split('\\n').map(l=>l.trim()).filter(Boolean);
-  let filled=0, skipped=[];
-  lines.forEach(line => {
-    const cm = line.match(/\\b([A-Z]{3})\\b/);
-    if (!cm) return;
-    const code = cm[1];
-    if (!KNOWN_CODES.includes(code)) return;
-    const nums = (line.match(/[\\d,]+\\.\\d+|\\d+/g)||[])
-      .map(n=>parseFloat(n.replace(/,/g,''))).filter(n=>!isNaN(n)&&n>0);
-    if (!nums.length) return;
-    let buy=null, sell=null;
-    if (nums.length>=6) { sell=nums[nums.length-2]; buy=nums[nums.length-1]; }
-    else if (nums.length===3) { sell=nums[1]; buy=nums[2]; }
-    else if (nums.length===2) { sell=nums[0]; buy=nums[1]; }
+function parsePaste(){
+  const text=document.getElementById('pasteArea').value;
+  const msg=document.getElementById('pasteMsg');
+  if(!text.trim()){showMsg(msg,'الصق النص أول','err');return;}
+  const lines=text.split('\\n').map(l=>l.trim()).filter(Boolean);
+  let filled=0,skipped=[];
+  lines.forEach(line=>{
+    const cm=line.match(/\\b([A-Z]{3})\\b/);
+    if(!cm)return;
+    const code=cm[1];
+    if(!KNOWN_CODES.includes(code))return;
+    const nums=(line.match(/[\\d,]+\\.\\d+|\\d+/g)||[]).map(n=>parseFloat(n.replace(/,/g,''))).filter(n=>!isNaN(n)&&n>0);
+    if(!nums.length)return;
+    let buy=null,sell=null;
+    if(nums.length>=6){sell=nums[nums.length-2];buy=nums[nums.length-1];}
+    else if(nums.length===3){sell=nums[1];buy=nums[2];}
+    else if(nums.length===2){sell=nums[0];buy=nums[1];}
     else return;
-    if (code!=='USD'&&code!=='EGP'&&code!=='KWD'&&buy>5000) { skipped.push(code); return; }
-    if (code==='USD') {
-      document.getElementById('buyInput').value=buy;
-      document.getElementById('sellInput').value=sell;
-      filled++;
-    } else {
-      const b=document.getElementById(`cur_${code}_buy`);
-      const s=document.getElementById(`cur_${code}_sell`);
-      if(b&&s){b.value=buy;s.value=sell;filled++;}
-    }
+    if(code!=='USD'&&code!=='EGP'&&code!=='KWD'&&buy>5000){skipped.push(code);return;}
+    if(code==='USD'){document.getElementById('buyInput').value=buy;document.getElementById('sellInput').value=sell;filled++;}
+    else{const b=document.getElementById(`cur_${code}_buy`);const s=document.getElementById(`cur_${code}_sell`);if(b&&s){b.value=buy;s.value=sell;filled++;}}
   });
-  if(filled>0){
-    let m=`✅ تم تعبئة ${filled} عملة تلقائياً`;
-    if(skipped.length) m+=` — تجاوز: ${skipped.join(', ')}`;
-    showMsg(msg,m,'ok');
-  } else showMsg(msg,'لم يتعرف على أي عملة','err');
+  if(filled>0){let m=`✅ تم تعبئة ${filled} عملة`;if(skipped.length)m+=` — تجاوز: ${skipped.join(', ')}`;showMsg(msg,m,'ok');}
+  else showMsg(msg,'لم يتعرف على أي عملة','err');
 }
-
-async function login() {
+async function login(){
   const pass=document.getElementById('passInput').value;
   const msg=document.getElementById('loginMsg');
-  try {
-    const r=await fetch(API+'/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pass})});
-    const d=await r.json();
-    if(r.ok){TOKEN=d.token;localStorage.setItem('adminToken',TOKEN);showPanel();}
-    else showMsg(msg,'كلمة السر غلط ❌','err');
-  } catch(e){showMsg(msg,'خطأ بالاتصال','err');}
+  try{const r=await fetch(API+'/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pass})});const d=await r.json();if(r.ok){TOKEN=d.token;localStorage.setItem('adminToken',TOKEN);showPanel();}else showMsg(msg,'كلمة السر غلط ❌','err');}
+  catch(e){showMsg(msg,'خطأ بالاتصال','err');}
 }
-
-async function loadCurrentRates() {
-  try {
-    const r=await fetch(API+'/api/rates');
-    const d=await r.json();
+async function loadCurrentRates(){
+  try{
+    const r=await fetch(API+'/api/rates');const d=await r.json();
     document.getElementById('crDate').textContent=d.date||'—';
     document.getElementById('crBulletinNo').textContent=d.bulletin_no||'—';
     document.getElementById('crBuy').textContent=d.buy||'—';
     document.getElementById('crSell').textContent=d.sell||'—';
     document.getElementById('crManual').innerHTML=d.manual?'<span class="badge manual">يدوي</span>':'<span class="badge auto">تلقائي</span>';
-    if(d.buy) document.getElementById('buyInput').value=d.buy;
-    if(d.sell) document.getElementById('sellInput').value=d.sell;
-    if(d.date) document.getElementById('dateInput').value=d.date;
-    if(d.bulletin_no) document.getElementById('bulletinNoInput').value=d.bulletin_no;
-    if(d.bulletin_url) document.getElementById('bulletinUrlInput').value=d.bulletin_url;
-    if(d.currencies){
-      Object.keys(d.currencies).forEach(code=>{
-        const b=document.getElementById(`cur_${code}_buy`);
-        const s=document.getElementById(`cur_${code}_sell`);
-        if(b) b.value=d.currencies[code].buy;
-        if(s) s.value=d.currencies[code].sell;
-      });
-    }
-  } catch(e){}
+    if(d.buy)document.getElementById('buyInput').value=d.buy;
+    if(d.sell)document.getElementById('sellInput').value=d.sell;
+    if(d.date)document.getElementById('dateInput').value=d.date;
+    if(d.bulletin_no)document.getElementById('bulletinNoInput').value=d.bulletin_no;
+    if(d.bulletin_url)document.getElementById('bulletinUrlInput').value=d.bulletin_url;
+    if(d.currencies){Object.keys(d.currencies).forEach(code=>{const b=document.getElementById(`cur_${code}_buy`);const s=document.getElementById(`cur_${code}_sell`);if(b)b.value=d.currencies[code].buy;if(s)s.value=d.currencies[code].sell;});}
+  }catch(e){}
 }
-
-async function updateRates() {
+async function updateRates(){
   const buy=parseFloat(document.getElementById('buyInput').value);
   const sell=parseFloat(document.getElementById('sellInput').value);
   const date=document.getElementById('dateInput').value;
   const bulletin_no=document.getElementById('bulletinNoInput').value;
   const bulletin_url=document.getElementById('bulletinUrlInput').value;
   const msg=document.getElementById('ratesMsg');
-  if(!buy||!sell||!date){showMsg(msg,'يرجى ملء حقول الدولار والتاريخ على الأقل','err');return;}
+  if(!buy||!sell||!date){showMsg(msg,'يرجى ملء حقول الدولار والتاريخ','err');return;}
   const currencies={};
-  BULLETIN_CURRENCIES.forEach(c=>{
-    const b=parseFloat(document.getElementById(`cur_${c.code}_buy`).value);
-    const s=parseFloat(document.getElementById(`cur_${c.code}_sell`).value);
-    if(b&&s) currencies[c.code]={buy:b,sell:s};
-  });
-  try {
+  BULLETIN_CURRENCIES.forEach(c=>{const b=parseFloat(document.getElementById(`cur_${c.code}_buy`).value);const s=parseFloat(document.getElementById(`cur_${c.code}_sell`).value);if(b&&s)currencies[c.code]={buy:b,sell:s};});
+  try{
     const r=await fetch(API+'/admin/rates',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN},body:JSON.stringify({buy,sell,date,bulletin_no,bulletin_url,currencies})});
     const d=await r.json();
     if(r.ok){showMsg(msg,'✅ تم التحديث بنجاح!','ok');loadCurrentRates();}
     else showMsg(msg,'غير مصرح ❌','err');
-  } catch(e){showMsg(msg,'خطأ بالاتصال','err');}
+  }catch(e){showMsg(msg,'خطأ بالاتصال','err');}
 }
-
-function showPanel(){
-  document.getElementById('loginSection').style.display='none';
-  document.getElementById('ratesSection').style.display='block';
-  loadCurrentRates();
-  setInterval(loadCurrentRates,60000);
-}
+function showPanel(){document.getElementById('loginSection').style.display='none';document.getElementById('ratesSection').style.display='block';loadCurrentRates();setInterval(loadCurrentRates,60000);}
 function logout(){TOKEN='';localStorage.removeItem('adminToken');document.getElementById('loginSection').style.display='block';document.getElementById('ratesSection').style.display='none';}
-function showMsg(el,text,type){el.textContent=text;el.className='msg '+type;el.style.display='block';setTimeout(()=>el.style.display='none',4000);}
-if(TOKEN) showPanel();
+function showMsg(el,text,type){el.textContent=text;el.className='msg '+type;el.style.display='block';setTimeout(()=>el.style.display='none',5000);}
+if(TOKEN)showPanel();
 document.getElementById('dateInput').value=new Date().toISOString().split('T')[0];
 </script>
 </body>
