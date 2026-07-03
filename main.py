@@ -1,10 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from apscheduler.schedulers.background import BackgroundScheduler
+from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import logging, re
+import logging, re, hashlib, secrets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,59 +17,53 @@ app = FastAPI(title="Syrian Rates API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ─── كلمة السر (مشفرة SHA256) ───────────────────
+ADMIN_PASSWORD_HASH = "04067de8cf70fc76077836b9f28020fc7214e866437ed7071a66bd9efb450d17"
+# token يتوّلد عند تشغيل السيرفر
+ADMIN_TOKEN = secrets.token_hex(32)
+
+# ─── البيانات ────────────────────────────────────
 cached = {
     "buy": None, "sell": None, "mid": None,
     "date": None, "updated_at": None,
-    "source": "مصرف سوريا المركزي", "status": "initializing"
+    "source": "مصرف سوريا المركزي",
+    "status": "initializing",
+    "manual": False
 }
 
+# ─── SCRAPER ─────────────────────────────────────
 CB_URL = "https://cb.gov.sy/index.php?page=list&ex=2&dir=exchangerate&lang=1&service=4&act=1207"
-
-def make_session():
-    s = requests.Session()
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ar-SY,ar;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Referer": "https://cb.gov.sy/",
-    })
-    return s
 
 def fetch_rates():
     global cached
     logger.info("🔄 جاري جلب أسعار المركزي...")
     try:
-        s = make_session()
-        s.get("https://cb.gov.sy/", timeout=10)   # أول زيارة تجيب الكوكيز
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+            "Accept-Language": "ar-SY,ar;q=0.9",
+            "Referer": "https://cb.gov.sy/",
+        })
+        s.get("https://cb.gov.sy/", timeout=10)
         resp = s.get(CB_URL, timeout=15)
         resp.encoding = "utf-8"
-
         if resp.status_code != 200:
-            logger.warning(f"⚠️ HTTP {resp.status_code}")
             cached["status"] = f"http_{resp.status_code}"
             return
-
         soup = BeautifulSoup(resp.text, "lxml")
-
         for row in soup.find_all("tr"):
             cells = row.find_all("td")
             if len(cells) < 3:
                 continue
             texts = [c.get_text(strip=True) for c in cells]
-
-            # ابحث عن تاريخ
             date_val = next(
                 (t for t in texts if re.search(r'\d{4}[-/]\d{2}[-/]\d{2}', t)
                  or re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', t)), None
             )
-
-            # ابحث عن أرقام > 50
             nums = []
             for t in texts:
                 clean = re.sub(r'[^\d.]', '', t.replace(',', '.'))
@@ -74,7 +71,6 @@ def fetch_rates():
                     v = float(clean)
                     if v > 50:
                         nums.append(v)
-
             if date_val and len(nums) >= 2:
                 buy, sell = nums[0], nums[1]
                 cached.update({
@@ -82,22 +78,40 @@ def fetch_rates():
                     "mid": round((buy + sell) / 2, 4),
                     "date": date_val,
                     "updated_at": datetime.utcnow().isoformat() + "Z",
-                    "status": "ok"
+                    "status": "ok", "manual": False
                 })
-                logger.info(f"✅ شراء={buy} مبيع={sell} تاريخ={date_val}")
+                logger.info(f"✅ شراء={buy} مبيع={sell}")
                 return
-
         logger.warning("⚠️ لم يُعثر على بيانات")
         cached["status"] = "parse_error"
-
     except Exception as e:
         logger.error(f"❌ {e}")
         cached["status"] = f"error: {str(e)}"
 
 
+# ─── AUTH ─────────────────────────────────────────
+security = HTTPBearer()
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.credentials != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="غير مصرح")
+    return True
+
+
+# ─── MODELS ──────────────────────────────────────
+class LoginRequest(BaseModel):
+    password: str
+
+class RatesUpdate(BaseModel):
+    buy: float
+    sell: float
+    date: str
+
+
+# ─── PUBLIC ENDPOINTS ─────────────────────────────
 @app.get("/")
 def root():
-    return {"message": "Syrian Rates API ✅", "docs": "/docs"}
+    return {"message": "Syrian Rates API ✅"}
 
 @app.get("/api/rates")
 def get_rates():
@@ -108,6 +122,208 @@ def health():
     return {"status": "ok", "cached_status": cached["status"], "last_updated": cached["updated_at"]}
 
 
+# ─── ADMIN ENDPOINTS ──────────────────────────────
+@app.post("/admin/login")
+def admin_login(req: LoginRequest):
+    hashed = hashlib.sha256(req.password.encode()).hexdigest()
+    if hashed != ADMIN_PASSWORD_HASH:
+        raise HTTPException(status_code=401, detail="كلمة السر غلط")
+    return {"token": ADMIN_TOKEN}
+
+@app.post("/admin/rates")
+def update_rates(data: RatesUpdate, auth: bool = Depends(verify_token)):
+    mid = round((data.buy + data.sell) / 2, 4)
+    cached.update({
+        "buy": data.buy, "sell": data.sell, "mid": mid,
+        "date": data.date,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "status": "ok", "manual": True
+    })
+    logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell}")
+    return {"success": True, "data": cached}
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_panel():
+    return """<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>لوحة التحكم - سعر الصرف السوري</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Cairo',sans-serif;background:#0a0f0d;color:#f0fdf4;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#111f16;border:1px solid #1a3a25;border-radius:20px;padding:2rem;width:100%;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+h1{font-size:1.3rem;font-weight:800;color:#22c55e;margin-bottom:0.3rem;text-align:center}
+.sub{font-size:0.75rem;color:#4ade80;text-align:center;margin-bottom:1.5rem}
+label{font-size:0.8rem;color:#86efac;font-weight:600;display:block;margin-bottom:0.4rem}
+input{width:100%;padding:0.8rem 1rem;background:#0d1a12;border:1.5px solid #1a3a25;border-radius:10px;color:#f0fdf4;font-family:'Cairo',sans-serif;font-size:1rem;font-weight:700;outline:none;margin-bottom:1rem;transition:border-color 0.2s}
+input:focus{border-color:#22c55e}
+.btn{width:100%;padding:0.9rem;background:linear-gradient(135deg,#15803d,#22c55e);color:white;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:1rem;font-weight:700;cursor:pointer;transition:opacity 0.2s;margin-top:0.5rem}
+.btn:hover{opacity:0.9}
+.msg{padding:0.7rem 1rem;border-radius:8px;font-size:0.85rem;font-weight:600;margin-top:1rem;text-align:center;display:none}
+.msg.ok{background:#052e16;border:1px solid #22c55e;color:#4ade80}
+.msg.err{background:#1c0a0a;border:1px solid #ef4444;color:#f87171}
+.divider{border:none;border-top:1px solid #1a3a25;margin:1.5rem 0}
+.badge{display:inline-block;padding:0.2rem 0.6rem;border-radius:20px;font-size:0.7rem;font-weight:700}
+.badge.manual{background:#1e3a5f;color:#60a5fa}
+.badge.auto{background:#052e16;color:#4ade80}
+#loginSection{}
+#ratesSection{display:none}
+.current-rates{background:#0d1a12;border:1px solid #1a3a25;border-radius:10px;padding:1rem;margin-bottom:1.5rem}
+.cr-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem}
+.cr-label{font-size:0.75rem;color:#86efac}
+.cr-value{font-size:1rem;font-weight:800;color:#22c55e}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🛡️ لوحة التحكم</h1>
+  <div class="sub">سعر الصرف السوري — Admin Only</div>
+
+  <!-- LOGIN -->
+  <div id="loginSection">
+    <label>كلمة السر</label>
+    <input type="password" id="passInput" placeholder="••••••••" onkeydown="if(event.key==='Enter')login()"/>
+    <button class="btn" onclick="login()">دخول</button>
+    <div class="msg" id="loginMsg"></div>
+  </div>
+
+  <!-- RATES PANEL -->
+  <div id="ratesSection">
+    <div class="current-rates" id="currentRates">
+      <div class="cr-row"><span class="cr-label">آخر تحديث</span><span class="cr-value" id="crDate">—</span></div>
+      <div class="cr-row"><span class="cr-label">سعر الشراء</span><span class="cr-value" id="crBuy">—</span></div>
+      <div class="cr-row"><span class="cr-label">سعر المبيع</span><span class="cr-value" id="crSell">—</span></div>
+      <div class="cr-row"><span class="cr-label">المصدر</span><span id="crManual">—</span></div>
+    </div>
+
+    <hr class="divider"/>
+
+    <label>سعر الشراء (Buy)</label>
+    <input type="number" id="buyInput" placeholder="112.50" step="0.01"/>
+    <label>سعر المبيع (Sell)</label>
+    <input type="number" id="sellInput" placeholder="122.50" step="0.01"/>
+    <label>تاريخ النشرة</label>
+    <input type="date" id="dateInput"/>
+    <button class="btn" onclick="updateRates()">💾 حفظ وتحديث الموقع</button>
+    <div class="msg" id="ratesMsg"></div>
+
+    <hr class="divider"/>
+    <button class="btn" style="background:#1a3a25;color:#86efac" onclick="logout()">تسجيل الخروج</button>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('adminToken') || '';
+const API = '';
+
+async function login() {
+  const pass = document.getElementById('passInput').value;
+  const msg  = document.getElementById('loginMsg');
+  try {
+    const r = await fetch(API + '/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({password: pass})
+    });
+    const d = await r.json();
+    if (r.ok) {
+      TOKEN = d.token;
+      localStorage.setItem('adminToken', TOKEN);
+      showPanel();
+    } else {
+      showMsg(msg, 'كلمة السر غلط ❌', 'err');
+    }
+  } catch(e) {
+    showMsg(msg, 'خطأ بالاتصال', 'err');
+  }
+}
+
+async function loadCurrentRates() {
+  try {
+    const r = await fetch(API + '/api/rates');
+    const d = await r.json();
+    document.getElementById('crDate').textContent  = d.date || '—';
+    document.getElementById('crBuy').textContent   = d.buy  || '—';
+    document.getElementById('crSell').textContent  = d.sell || '—';
+    document.getElementById('crManual').innerHTML  =
+      d.manual
+        ? '<span class="badge manual">يدوي</span>'
+        : '<span class="badge auto">تلقائي</span>';
+    // ملء الحقول بالقيم الحالية
+    if (d.buy)  document.getElementById('buyInput').value  = d.buy;
+    if (d.sell) document.getElementById('sellInput').value = d.sell;
+    if (d.date) document.getElementById('dateInput').value = d.date;
+  } catch(e) {}
+}
+
+async function updateRates() {
+  const buy  = parseFloat(document.getElementById('buyInput').value);
+  const sell = parseFloat(document.getElementById('sellInput').value);
+  const date = document.getElementById('dateInput').value;
+  const msg  = document.getElementById('ratesMsg');
+
+  if (!buy || !sell || !date) {
+    showMsg(msg, 'يرجى ملء جميع الحقول', 'err');
+    return;
+  }
+
+  try {
+    const r = await fetch(API + '/admin/rates', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + TOKEN
+      },
+      body: JSON.stringify({buy, sell, date})
+    });
+    const d = await r.json();
+    if (r.ok) {
+      showMsg(msg, '✅ تم التحديث بنجاح!', 'ok');
+      loadCurrentRates();
+    } else {
+      showMsg(msg, 'غير مصرح ❌', 'err');
+    }
+  } catch(e) {
+    showMsg(msg, 'خطأ بالاتصال', 'err');
+  }
+}
+
+function showPanel() {
+  document.getElementById('loginSection').style.display = 'none';
+  document.getElementById('ratesSection').style.display = 'block';
+  loadCurrentRates();
+  // تحديث تلقائي كل دقيقة
+  setInterval(loadCurrentRates, 60000);
+}
+
+function logout() {
+  TOKEN = '';
+  localStorage.removeItem('adminToken');
+  document.getElementById('loginSection').style.display = 'block';
+  document.getElementById('ratesSection').style.display = 'none';
+}
+
+function showMsg(el, text, type) {
+  el.textContent = text;
+  el.className = 'msg ' + type;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+
+// تحقق لو في token محفوظ
+if (TOKEN) showPanel();
+
+// ضع تاريخ اليوم افتراضياً
+document.getElementById('dateInput').value = new Date().toISOString().split('T')[0];
+</script>
+</body>
+</html>"""
+
+
+# ─── SCHEDULER ───────────────────────────────────
 scheduler = BackgroundScheduler()
 scheduler.add_job(fetch_rates, "interval", hours=1)
 scheduler.start()
