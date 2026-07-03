@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import logging, re, hashlib, secrets
+import logging, re, hashlib, secrets, json, os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,17 +23,38 @@ app.add_middleware(
 
 # ─── كلمة السر (مشفرة SHA256) ───────────────────
 ADMIN_PASSWORD_HASH = "04067de8cf70fc76077836b9f28020fc7214e866437ed7071a66bd9efb450d17"
-# token يتوّلد عند تشغيل السيرفر
-ADMIN_TOKEN = secrets.token_hex(32)
+# token ثابت (مش عشوائي) — يضل شغال حتى لو السيرفر أعاد التشغيل
+ADMIN_TOKEN = hashlib.sha256((ADMIN_PASSWORD_HASH + "syprate-fixed-salt").encode()).hexdigest()
 
-# ─── البيانات ────────────────────────────────────
-cached = {
-    "buy": None, "sell": None, "mid": None,
-    "date": None, "updated_at": None,
-    "source": "مصرف سوريا المركزي",
-    "status": "initializing",
-    "manual": False
-}
+# ─── الحفظ الدائم بملف ───────────────────────────
+DATA_FILE = "rates_data.json"
+
+def load_cached():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                logger.info(f"✅ تم استرجاع البيانات المحفوظة: {data}")
+                return data
+        except Exception as e:
+            logger.warning(f"⚠️ فشل قراءة الملف المحفوظ: {e}")
+    return {
+        "buy": None, "sell": None, "mid": None,
+        "date": None, "updated_at": None,
+        "source": "مصرف سوريا المركزي",
+        "status": "initializing",
+        "manual": False
+    }
+
+def save_cached():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(cached, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"❌ فشل حفظ البيانات: {e}")
+
+# ─── البيانات (تُحمّل من الملف إذا موجود) ─────────
+cached = load_cached()
 
 # ─── SCRAPER ─────────────────────────────────────
 CB_URL = "https://cb.gov.sy/index.php?page=list&ex=2&dir=exchangerate&lang=1&service=4&act=1207"
@@ -80,6 +101,7 @@ def fetch_rates():
                     "updated_at": datetime.utcnow().isoformat() + "Z",
                     "status": "ok", "manual": False
                 })
+                save_cached()
                 logger.info(f"✅ شراء={buy} مبيع={sell}")
                 return
         logger.warning("⚠️ لم يُعثر على بيانات")
@@ -139,6 +161,7 @@ def update_rates(data: RatesUpdate, auth: bool = Depends(verify_token)):
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "status": "ok", "manual": True
     })
+    save_cached()
     logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell}")
     return {"success": True, "data": cached}
 
