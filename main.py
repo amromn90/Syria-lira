@@ -44,17 +44,16 @@ def init_db():
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
                 """)
+                # جدول الزيارات بعمود TEXT واحد للقيمة
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS visits (
                         key TEXT PRIMARY KEY,
-                        value INTEGER DEFAULT 0,
-                        date TEXT DEFAULT ''
+                        value TEXT DEFAULT '0'
                     )
                 """)
-                # أدخل قيم أولية لو مو موجودة
-                cur.execute("INSERT INTO visits (key,value,date) VALUES ('total',0,'') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO visits (key,value,date) VALUES ('today',0,'') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO visits (key,value,date) VALUES ('today_date','0','') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO visits (key,value) VALUES ('total','0') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO visits (key,value) VALUES ('today','0') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO visits (key,value) VALUES ('today_date','') ON CONFLICT DO NOTHING")
         logger.info("✅ قاعدة البيانات جاهزة")
     except Exception as e:
         logger.error(f"❌ فشل تهيئة قاعدة البيانات: {e}")
@@ -98,18 +97,19 @@ def db_visit():
         today = datetime.utcnow().strftime("%Y-%m-%d")
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # شيك إذا تغير اليوم
+                # جيب تاريخ اليوم المحفوظ
                 cur.execute("SELECT value FROM visits WHERE key='today_date'")
                 row = cur.fetchone()
                 stored_date = row[0] if row else ""
+                # لو تغير اليوم صفّر عداد اليوم
                 if stored_date != today:
-                    cur.execute("UPDATE visits SET value=0, date=%s WHERE key='today'", (today,))
+                    cur.execute("UPDATE visits SET value='0' WHERE key='today'")
                     cur.execute("UPDATE visits SET value=%s WHERE key='today_date'", (today,))
                 # زود العدادين
-                cur.execute("UPDATE visits SET value=value+1 WHERE key='total' RETURNING value")
-                total = cur.fetchone()[0]
-                cur.execute("UPDATE visits SET value=value+1 WHERE key='today' RETURNING value")
-                today_count = cur.fetchone()[0]
+                cur.execute("UPDATE visits SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='total' RETURNING value")
+                total = int(cur.fetchone()[0])
+                cur.execute("UPDATE visits SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='today' RETURNING value")
+                today_count = int(cur.fetchone()[0])
         return {"total": total, "today": today_count}
     except Exception as e:
         logger.error(f"❌ فشل تسجيل الزيارة: {e}")
