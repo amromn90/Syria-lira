@@ -43,7 +43,10 @@ def load_cached():
         "date": None, "updated_at": None,
         "source": "مصرف سوريا المركزي",
         "status": "initializing",
-        "manual": False
+        "manual": False,
+        "bulletin_no": None,
+        "bulletin_url": None,
+        "currencies": {}
     }
 
 def save_cached():
@@ -124,10 +127,17 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 class LoginRequest(BaseModel):
     password: str
 
+class CurrencyRate(BaseModel):
+    buy: float
+    sell: float
+
 class RatesUpdate(BaseModel):
     buy: float
     sell: float
     date: str
+    bulletin_no: str = ""
+    bulletin_url: str = ""
+    currencies: dict[str, CurrencyRate] = {}
 
 
 # ─── PUBLIC ENDPOINTS ─────────────────────────────
@@ -155,14 +165,22 @@ def admin_login(req: LoginRequest):
 @app.post("/admin/rates")
 def update_rates(data: RatesUpdate, auth: bool = Depends(verify_token)):
     mid = round((data.buy + data.sell) / 2, 4)
+    currencies_dict = {}
+    for code, rate in data.currencies.items():
+        c_mid = round((rate.buy + rate.sell) / 2, 4)
+        currencies_dict[code] = {"buy": rate.buy, "sell": rate.sell, "mid": c_mid}
+
     cached.update({
         "buy": data.buy, "sell": data.sell, "mid": mid,
         "date": data.date,
+        "bulletin_no": data.bulletin_no,
+        "bulletin_url": data.bulletin_url,
+        "currencies": currencies_dict,
         "updated_at": datetime.utcnow().isoformat() + "Z",
         "status": "ok", "manual": True
     })
     save_cached()
-    logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell}")
+    logger.info(f"✅ تحديث يدوي: شراء={data.buy} مبيع={data.sell} نشرة={data.bulletin_no} عملات={len(currencies_dict)}")
     return {"success": True, "data": cached}
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -176,8 +194,8 @@ def admin_panel():
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Cairo',sans-serif;background:#0a0f0d;color:#f0fdf4;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
-.card{background:#111f16;border:1px solid #1a3a25;border-radius:20px;padding:2rem;width:100%;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+body{font-family:'Cairo',sans-serif;background:#0a0f0d;color:#f0fdf4;min-height:100vh;padding:2rem 1rem}
+.card{background:#111f16;border:1px solid #1a3a25;border-radius:20px;padding:2rem;width:100%;max-width:620px;margin:0 auto;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
 h1{font-size:1.3rem;font-weight:800;color:#22c55e;margin-bottom:0.3rem;text-align:center}
 .sub{font-size:0.75rem;color:#4ade80;text-align:center;margin-bottom:1.5rem}
 label{font-size:0.8rem;color:#86efac;font-weight:600;display:block;margin-bottom:0.4rem}
@@ -192,13 +210,18 @@ input:focus{border-color:#22c55e}
 .badge{display:inline-block;padding:0.2rem 0.6rem;border-radius:20px;font-size:0.7rem;font-weight:700}
 .badge.manual{background:#1e3a5f;color:#60a5fa}
 .badge.auto{background:#052e16;color:#4ade80}
-#loginSection{}
+#loginSection{max-width:420px;margin:0 auto}
 #ratesSection{display:none}
 .current-rates{background:#0d1a12;border:1px solid #1a3a25;border-radius:10px;padding:1rem;margin-bottom:1.5rem}
 .cr-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem}
 .cr-label{font-size:0.75rem;color:#86efac}
 .cr-value{font-size:1rem;font-weight:800;color:#22c55e}
-</style>
+.section-h{font-size:0.9rem;font-weight:800;color:#C9A84C;margin:1.2rem 0 0.8rem;display:flex;align-items:center;gap:0.4rem}
+.curr-grid{display:grid;grid-template-columns:auto 1fr 1fr;gap:0.5rem 0.6rem;align-items:center;margin-bottom:0.5rem}
+.curr-code{font-size:0.8rem;font-weight:800;color:#86efac;background:#0d1a12;border:1px solid #1a3a25;border-radius:8px;padding:0.6rem 0.5rem;text-align:center}
+.curr-grid input{margin-bottom:0;padding:0.55rem 0.6rem;font-size:0.85rem}
+.curr-header{display:grid;grid-template-columns:auto 1fr 1fr;gap:0.5rem 0.6rem;margin-bottom:0.5rem}
+.curr-header span{font-size:0.68rem;color:#4ade80;text-align:center;font-weight:700}</style>
 </head>
 <body>
 <div class="card">
@@ -217,19 +240,32 @@ input:focus{border-color:#22c55e}
   <div id="ratesSection">
     <div class="current-rates" id="currentRates">
       <div class="cr-row"><span class="cr-label">آخر تحديث</span><span class="cr-value" id="crDate">—</span></div>
-      <div class="cr-row"><span class="cr-label">سعر الشراء</span><span class="cr-value" id="crBuy">—</span></div>
-      <div class="cr-row"><span class="cr-label">سعر المبيع</span><span class="cr-value" id="crSell">—</span></div>
+      <div class="cr-row"><span class="cr-label">رقم النشرة</span><span class="cr-value" id="crBulletinNo">—</span></div>
+      <div class="cr-row"><span class="cr-label">سعر الدولار (شراء/مبيع)</span><span class="cr-value" id="crBuy">—</span></div>
+      <div class="cr-row"><span class="cr-label"></span><span class="cr-value" id="crSell">—</span></div>
       <div class="cr-row"><span class="cr-label">المصدر</span><span id="crManual">—</span></div>
     </div>
 
-    <hr class="divider"/>
-
+    <div class="section-h">💵 الدولار الأمريكي (العملة الأساسية)</div>
     <label>سعر الشراء (Buy)</label>
-    <input type="number" id="buyInput" placeholder="112.50" step="0.01"/>
+    <input type="number" id="buyInput" placeholder="121.50" step="0.01"/>
     <label>سعر المبيع (Sell)</label>
     <input type="number" id="sellInput" placeholder="122.50" step="0.01"/>
+
+    <div class="section-h">📋 معلومات النشرة</div>
     <label>تاريخ النشرة</label>
     <input type="date" id="dateInput"/>
+    <label>رقم النشرة</label>
+    <input type="text" id="bulletinNoInput" placeholder="119"/>
+    <label>رابط النشرة (PDF)</label>
+    <input type="text" id="bulletinUrlInput" placeholder="https://cb.gov.sy/downloads/files/xxxx.PDF"/>
+
+    <div class="section-h">🌍 باقي العملات (حسب النشرة الرسمية)</div>
+    <div class="curr-header">
+      <span></span><span>شراء</span><span>مبيع</span>
+    </div>
+    <div id="currenciesGrid"></div>
+
     <button class="btn" onclick="updateRates()">💾 حفظ وتحديث الموقع</button>
     <div class="msg" id="ratesMsg"></div>
 
@@ -241,6 +277,46 @@ input:focus{border-color:#22c55e}
 <script>
 let TOKEN = localStorage.getItem('adminToken') || '';
 const API = '';
+
+// العملات الأساسية من النشرة الرسمية (بالإضافة للدولار)
+const BULLETIN_CURRENCIES = [
+  {code:'EUR', name:'يورو'},
+  {code:'GBP', name:'جنيه إسترليني'},
+  {code:'CHF', name:'فرنك سويسري'},
+  {code:'JPY', name:'ين ياباني'},
+  {code:'CNY', name:'يوان صيني'},
+  {code:'TRY', name:'ليرة تركية'},
+  {code:'SAR', name:'ريال سعودي'},
+  {code:'QAR', name:'ريال قطري'},
+  {code:'AED', name:'درهم إماراتي'},
+  {code:'KWD', name:'دينار كويتي'},
+  {code:'BHD', name:'دينار بحريني'},
+  {code:'OMR', name:'ريال عماني'},
+  {code:'JOD', name:'دينار أردني'},
+  {code:'EGP', name:'جنيه مصري'},
+  {code:'CAD', name:'دولار كندي'},
+  {code:'DKK', name:'كرونة دنماركية'},
+  {code:'SEK', name:'كرونة سويدية'},
+  {code:'NOK', name:'كرونة نرويجية'},
+  {code:'AUD', name:'دولار أسترالي'},
+  {code:'RUB', name:'روبل روسي'},
+];
+
+function buildCurrenciesGrid() {
+  const grid = document.getElementById('currenciesGrid');
+  grid.innerHTML = '';
+  BULLETIN_CURRENCIES.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'curr-grid';
+    row.innerHTML = `
+      <div class="curr-code">${c.code}</div>
+      <input type="number" step="0.01" id="cur_${c.code}_buy" placeholder="شراء" title="${c.name} - شراء"/>
+      <input type="number" step="0.01" id="cur_${c.code}_sell" placeholder="مبيع" title="${c.name} - مبيع"/>
+    `;
+    grid.appendChild(row);
+  });
+}
+buildCurrenciesGrid();
 
 async function login() {
   const pass = document.getElementById('passInput').value;
@@ -269,8 +345,9 @@ async function loadCurrentRates() {
     const r = await fetch(API + '/api/rates');
     const d = await r.json();
     document.getElementById('crDate').textContent  = d.date || '—';
-    document.getElementById('crBuy').textContent   = d.buy  || '—';
-    document.getElementById('crSell').textContent  = d.sell || '—';
+    document.getElementById('crBulletinNo').textContent = d.bulletin_no || '—';
+    document.getElementById('crBuy').textContent   = d.buy  ? ('شراء ' + d.buy) : '—';
+    document.getElementById('crSell').textContent  = d.sell ? ('مبيع ' + d.sell) : '—';
     document.getElementById('crManual').innerHTML  =
       d.manual
         ? '<span class="badge manual">يدوي</span>'
@@ -279,6 +356,17 @@ async function loadCurrentRates() {
     if (d.buy)  document.getElementById('buyInput').value  = d.buy;
     if (d.sell) document.getElementById('sellInput').value = d.sell;
     if (d.date) document.getElementById('dateInput').value = d.date;
+    if (d.bulletin_no)  document.getElementById('bulletinNoInput').value  = d.bulletin_no;
+    if (d.bulletin_url) document.getElementById('bulletinUrlInput').value = d.bulletin_url;
+    // ملء أسعار العملات المحفوظة
+    if (d.currencies) {
+      Object.keys(d.currencies).forEach(code => {
+        const buyEl  = document.getElementById(`cur_${code}_buy`);
+        const sellEl = document.getElementById(`cur_${code}_sell`);
+        if (buyEl)  buyEl.value  = d.currencies[code].buy;
+        if (sellEl) sellEl.value = d.currencies[code].sell;
+      });
+    }
   } catch(e) {}
 }
 
@@ -286,12 +374,22 @@ async function updateRates() {
   const buy  = parseFloat(document.getElementById('buyInput').value);
   const sell = parseFloat(document.getElementById('sellInput').value);
   const date = document.getElementById('dateInput').value;
+  const bulletin_no  = document.getElementById('bulletinNoInput').value;
+  const bulletin_url = document.getElementById('bulletinUrlInput').value;
   const msg  = document.getElementById('ratesMsg');
 
   if (!buy || !sell || !date) {
-    showMsg(msg, 'يرجى ملء جميع الحقول', 'err');
+    showMsg(msg, 'يرجى ملء حقول الدولار والتاريخ على الأقل', 'err');
     return;
   }
+
+  // تجميع بيانات باقي العملات (فقط اللي تم تعبئتها)
+  const currencies = {};
+  BULLETIN_CURRENCIES.forEach(c => {
+    const b = parseFloat(document.getElementById(`cur_${c.code}_buy`).value);
+    const s = parseFloat(document.getElementById(`cur_${c.code}_sell`).value);
+    if (b && s) currencies[c.code] = {buy: b, sell: s};
+  });
 
   try {
     const r = await fetch(API + '/admin/rates', {
@@ -300,7 +398,7 @@ async function updateRates() {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + TOKEN
       },
-      body: JSON.stringify({buy, sell, date})
+      body: JSON.stringify({buy, sell, date, bulletin_no, bulletin_url, currencies})
     });
     const d = await r.json();
     if (r.ok) {
