@@ -260,6 +260,17 @@ input:focus{border-color:#22c55e}
     <label>رابط النشرة (PDF)</label>
     <input type="text" id="bulletinUrlInput" placeholder="https://cb.gov.sy/downloads/files/xxxx.PDF"/>
 
+    <div class="section-h">📋 لصق سريع من النشرة</div>
+    <label style="font-weight:400;color:#6b8f7a">
+      انسخ سطر كل عملة من النشرة (6 أرقام: قديمة وجديدة) — بياخد تلقائياً عمود <b>الليرة الجديدة</b> فقط (آخر رقمين)
+    </label>
+    <textarea id="pasteArea" rows="6" placeholder="USD 12200 12250 12150 122.00 122.50 121.50
+EUR 13928.74 13998.04 13859.44 139.29 139.98 138.59
+...(أو 3 أرقام فقط لو نسخت عمود الجديدة وحده)"
+      style="width:100%;padding:0.8rem 1rem;background:#0d1a12;border:1.5px solid #1a3a25;border-radius:10px;color:#f0fdf4;font-family:'Cairo',sans-serif;font-size:0.85rem;outline:none;margin-bottom:0.6rem;resize:vertical"></textarea>
+    <button class="btn" style="background:#1e3a5f" onclick="parsePaste()">⚡ تحليل ولصق بالحقول</button>
+    <div class="msg" id="pasteMsg"></div>
+
     <div class="section-h">🌍 باقي العملات (حسب النشرة الرسمية)</div>
     <div class="curr-header">
       <span></span><span>شراء</span><span>مبيع</span>
@@ -317,6 +328,84 @@ function buildCurrenciesGrid() {
   });
 }
 buildCurrenciesGrid();
+
+// معروفة رموز العملات المسموحة (تشمل USD كمان)
+const KNOWN_CODES = ['USD', ...BULLETIN_CURRENCIES.map(c => c.code)];
+
+function parsePaste() {
+  const text = document.getElementById('pasteArea').value;
+  const msg  = document.getElementById('pasteMsg');
+  if (!text.trim()) {
+    showMsg(msg, 'الصق النص أول', 'err');
+    return;
+  }
+
+  const lines = text.split('\\n').map(l => l.trim()).filter(Boolean);
+  let filled = 0;
+  let skipped = [];
+
+  lines.forEach(line => {
+    // ابحث عن رمز عملة معروف بالسطر (3 حروف كبيرة)
+    const codeMatch = line.match(/\\b([A-Z]{3})\\b/);
+    if (!codeMatch) return;
+    const code = codeMatch[1];
+    if (!KNOWN_CODES.includes(code)) return;
+
+    // استخرج كل الأرقام بالسطر (يدعم الفاصلة العشرية والألوف)
+    const nums = (line.match(/[\\d,]+\\.\\d+|\\d+/g) || [])
+      .map(n => parseFloat(n.replace(/,/g, '')))
+      .filter(n => !isNaN(n) && n > 0);
+
+    if (nums.length === 0) return;
+
+    let buy = null, sell = null;
+
+    if (nums.length >= 6) {
+      // 6 أرقام = [وسطي قديمة, مبيع قديمة, شراء قديمة, وسطي جديدة, مبيع جديدة, شراء جديدة]
+      // ناخد فقط عمود الليرة الجديدة (آخر 3 أرقام)
+      sell = nums[nums.length - 2];
+      buy  = nums[nums.length - 1];
+    } else if (nums.length === 3) {
+      // 3 أرقام فقط = افتراضياً عمود واحد (وسطي، مبيع، شراء)
+      sell = nums[1];
+      buy  = nums[2];
+    } else if (nums.length === 2) {
+      sell = nums[0];
+      buy  = nums[1];
+    } else {
+      return; // رقم واحد بس، مش كافي
+    }
+
+    // فحص أمان: تأكد إن الأرقام منطقية (مو أرقام الليرة القديمة الكبيرة بالغلط)
+    // لو الرقم أكبر من 5000 لعملة غير SYP الأصلية، على الأغلب هي القديمة بالغلط
+    if (code !== 'USD' && code !== 'EGP' && code !== 'JOD' && buy > 5000) {
+      skipped.push(code + ' (رقم كبير مشبوه)');
+      return;
+    }
+
+    if (code === 'USD') {
+      document.getElementById('buyInput').value  = buy;
+      document.getElementById('sellInput').value = sell;
+      filled++;
+    } else {
+      const buyEl  = document.getElementById(`cur_${code}_buy`);
+      const sellEl = document.getElementById(`cur_${code}_sell`);
+      if (buyEl && sellEl) {
+        buyEl.value  = buy;
+        sellEl.value = sell;
+        filled++;
+      }
+    }
+  });
+
+  if (filled > 0) {
+    let m = `✅ تم تعبئة ${filled} عملة تلقائياً (عمود الليرة الجديدة فقط)`;
+    if (skipped.length) m += ` — تم تجاوز: ${skipped.join(', ')}`;
+    showMsg(msg, m, 'ok');
+  } else {
+    showMsg(msg, 'لم يتم التعرف على أي عملة — تأكد من الصيغة', 'err');
+  }
+}
 
 async function login() {
   const pass = document.getElementById('passInput').value;
