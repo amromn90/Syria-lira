@@ -4,3 +4,4 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.2.2
 apscheduler==3.10.4
+psycopg2-binary==2.9.9
