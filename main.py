@@ -148,8 +148,8 @@ def fetch_rates():
         resp = s.get(CB_URL, timeout=15)
         resp.encoding = "utf-8"
         if resp.status_code != 200:
-            cached["status"] = f"http_{resp.status_code}"
-            return
+            logger.warning(f"⚠️ HTTP {resp.status_code} - محافظ على البيانات القديمة")
+            return  # لا نغير شي، نحافظ على البيانات القديمة
         soup = BeautifulSoup(resp.text, "lxml")
         for row in soup.find_all("tr"):
             cells = row.find_all("td")
@@ -179,11 +179,11 @@ def fetch_rates():
                 db_save(cached)
                 logger.info(f"✅ شراء={buy} مبيع={sell}")
                 return
-        logger.warning("⚠️ لم يُعثر على بيانات")
-        cached["status"] = "parse_error"
+        logger.warning("⚠️ لم يُعثر على بيانات - محافظ على البيانات القديمة")
+        # لا نغير cached إذا عندنا بيانات محفوظة
     except Exception as e:
-        logger.error(f"❌ {e}")
-        cached["status"] = f"error: {str(e)}"
+        logger.error(f"❌ {e} - محافظ على البيانات القديمة")
+        # لا نغير cached إذا عندنا بيانات محفوظة
 
 
 security = HTTPBearer()
