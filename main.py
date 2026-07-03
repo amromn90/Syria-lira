@@ -137,6 +137,38 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="غير مصرح")
     return True
 
+# ─── عداد الزوار ──────────────────────────────────
+VISITS_FILE = "/tmp/visits.json"
+
+def load_visits():
+    if os.path.exists(VISITS_FILE):
+        try:
+            with open(VISITS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"total": 0, "today": 0, "today_date": ""}
+
+def save_visits(v):
+    try:
+        with open(VISITS_FILE, "w") as f:
+            json.dump(v, f)
+    except:
+        pass
+
+visits = load_visits()
+
+@app.get("/api/visit")
+def record_visit():
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if visits["today_date"] != today:
+        visits["today"] = 0
+        visits["today_date"] = today
+    visits["total"] += 1
+    visits["today"] += 1
+    save_visits(visits)
+    return {"total": visits["total"], "today": visits["today"]}
+
 
 class LoginRequest(BaseModel):
     password: str
