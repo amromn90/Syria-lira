@@ -217,10 +217,17 @@ async def record_visit(db=Depends(get_db)):
 
 PMA_ITEM_URL = "https://admin.pma.sy/pma_project/public/api/item?perPage=100"
 PMA_WORLD_URL = "https://admin.pma.sy/pma_project/public/api/gold-prices"
+PMA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Referer": "https://pma.sy/",
+    "Origin": "https://pma.sy",
+    "Accept": "application/json, text/plain, */*",
+}
 
 async def fetch_pma_items():
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=15, headers=PMA_HEADERS) as client:
         r = await client.get(PMA_ITEM_URL)
+        r.raise_for_status()
         return r.json().get("data", [])
 
 def find_pma_item(items, name_contains):
@@ -289,7 +296,7 @@ async def get_platinum_local():
 @app.get("/api/gold/world")
 async def get_gold_world():
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15, headers=PMA_HEADERS) as client:
             r = await client.get(PMA_WORLD_URL)
             item = r.json()["items"][0]
             price_usd = float(item["xauPrice"])
@@ -313,7 +320,7 @@ async def get_gold_world():
 @app.get("/api/silver/world")
 async def get_silver_world():
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15, headers=PMA_HEADERS) as client:
             r = await client.get(PMA_WORLD_URL)
             item = r.json()["items"][0]
             price_usd = float(item["xagPrice"])
