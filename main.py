@@ -247,7 +247,7 @@ def shape_local_item(it):
         "sell_syp": float(syp.get("sale")) if syp.get("sale") else None,
         "buy_usd": float(usd.get("buy")) if usd.get("buy") else None,
         "sell_usd": float(usd.get("sale")) if usd.get("sale") else None,
-        "updated_at": it.get("updated_at"),
+        "updated_at": datetime.now().isoformat(),
     }
 
 @app.get("/api/gold/official")
