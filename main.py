@@ -224,10 +224,11 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
             float(r["buy"]) if r.get("buy") else None,
             float(r["sell"]) if r.get("sell") else None)
     if req.bulletin and (req.bulletin.number or req.bulletin.date):
+        b_date = str(req.bulletin.date) if req.bulletin.date else None
         await db.execute("""
             INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
-            VALUES ($1, $2, $3)
-        """, req.bulletin.number, req.bulletin.date, req.bulletin.url)
+            VALUES ($1, $2::text, $3)
+        """, req.bulletin.number, b_date, req.bulletin.url)
     return {"status": "ok"}
 
 class GoldOfficialUpdate(BaseModel):
