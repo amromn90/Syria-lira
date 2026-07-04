@@ -70,11 +70,10 @@ async def startup():
                 id SERIAL PRIMARY KEY,
                 bulletin_date TEXT,
                 bulletin_time TEXT,
-                karat_24 NUMERIC,
-                karat_21 NUMERIC,
-                karat_18 NUMERIC,
-                ounce_price NUMERIC,
-                lira_gold NUMERIC,
+                k21_buy NUMERIC,
+                k21_sell NUMERIC,
+                k18_buy NUMERIC,
+                k18_sell NUMERIC,
                 note TEXT,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
@@ -258,11 +257,10 @@ async def get_silver_world():
 class GoldOfficialUpdate(BaseModel):
     bulletin_date: Optional[str] = None
     bulletin_time: Optional[str] = None
-    karat_24: Optional[float] = None
-    karat_21: Optional[float] = None
-    karat_18: Optional[float] = None
-    ounce_price: Optional[float] = None
-    lira_gold: Optional[float] = None
+    k21_buy: Optional[float] = None
+    k21_sell: Optional[float] = None
+    k18_buy: Optional[float] = None
+    k18_sell: Optional[float] = None
     note: Optional[str] = None
 
 @app.post("/admin/gold/official")
@@ -270,10 +268,10 @@ async def update_gold_official(req: GoldOfficialUpdate, request: Request, db=Dep
     verify_token(request)
     await db.execute("""
         INSERT INTO gold_official
-            (bulletin_date, bulletin_time, karat_24, karat_21, karat_18, ounce_price, lira_gold, note)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    """, req.bulletin_date, req.bulletin_time, req.karat_24, req.karat_21,
-         req.karat_18, req.ounce_price, req.lira_gold, req.note)
+            (bulletin_date, bulletin_time, k21_buy, k21_sell, k18_buy, k18_sell, note)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+    """, req.bulletin_date, req.bulletin_time, req.k21_buy, req.k21_sell,
+         req.k18_buy, req.k18_sell, req.note)
     return {"status": "ok"}
 
 # ═══════════════════════════════════════════
