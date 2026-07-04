@@ -77,6 +77,11 @@ async def startup():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # إصلاح دفاعي: لو العمود كان موجود من قبل بنوع DATE، حوّله TEXT
+        try:
+            await conn.execute("ALTER TABLE energy_prices ALTER COLUMN effective_date TYPE TEXT")
+        except Exception:
+            pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS energy_price_history (
                 id SERIAL PRIMARY KEY,
@@ -87,6 +92,10 @@ async def startup():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        try:
+            await conn.execute("ALTER TABLE energy_price_history ALTER COLUMN effective_date TYPE TEXT")
+        except Exception:
+            pass
         await conn.execute("""
             INSERT INTO energy_prices (fuel_type, price, unit)
             VALUES
