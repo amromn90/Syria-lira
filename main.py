@@ -171,7 +171,7 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
         "sell": req.sell,
         "mid": mid,
         "date": req.date,
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": datetime.utcnow().isoformat() + "Z",
         "source": "مصرف سوريا المركزي",
         "status": "ok",
         "manual": True,
@@ -247,7 +247,7 @@ def shape_local_item(it):
         "sell_syp": float(syp.get("sale")) if syp.get("sale") else None,
         "buy_usd": float(usd.get("buy")) if usd.get("buy") else None,
         "sell_usd": float(usd.get("sale")) if usd.get("sale") else None,
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": datetime.utcnow().isoformat() + "Z",
     }
 
 @app.get("/api/gold/official")
@@ -309,7 +309,7 @@ async def get_gold_world():
                 "karat_18": round(gram_24 * (18/24), 2),
                 "change": round(float(item.get("chgXau",0)), 2),
                 "change_pct": round(float(item.get("pcXau",0)), 3),
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": datetime.utcnow().isoformat() + "Z",
                 "source": "Bullion Vault / PMA.sy",
                 "source_url": "https://pma.sy",
                 "status": "live"
@@ -332,7 +332,7 @@ async def get_silver_world():
                 "silver_900": round(gram * 0.900, 2),
                 "change": round(float(item.get("chgXag",0)), 4),
                 "change_pct": round(float(item.get("pcXag",0)), 3),
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": datetime.utcnow().isoformat() + "Z",
                 "source": "Bullion Vault / PMA.sy",
                 "source_url": "https://pma.sy",
                 "status": "live"
