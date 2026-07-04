@@ -156,6 +156,25 @@
 
   <!-- ─── العملات ─── -->
   <div class="tab-content active" id="tab-currencies">
+
+    <div class="card">
+      <div class="section-title">📄 معلومات النشرة الرسمية</div>
+      <div class="form-grid three">
+        <div class="form-group">
+          <label>🔢 رقم النشرة</label>
+          <input type="text" id="bulletinNumber" placeholder="مثال: 125">
+        </div>
+        <div class="form-group">
+          <label>📅 تاريخ النشرة</label>
+          <input type="date" id="bulletinDate">
+        </div>
+        <div class="form-group">
+          <label>🔗 رابط النشرة (اختياري)</label>
+          <input type="url" id="bulletinUrl" placeholder="https://...">
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="section-title">📋 لصق النشرة الرسمية</div>
       <textarea class="paste-area" id="pasteArea" placeholder="الصق أرقام النشرة هنا..."></textarea>
@@ -300,10 +319,15 @@ function switchTab(name) {
 
 // ─── Currencies ──────────────────────────────
 async function loadRates() {
-  const res = await fetch(`${API}/api/rates`);
-  const data = await res.json();
   const map = {};
-  data.forEach(r => map[r.currency] = r);
+  try {
+    const res = await fetch(`${API}/api/rates`);
+    const data = await res.json();
+    data.forEach(r => map[r.currency] = r);
+  } catch(e) {}
+
+  // ضع تاريخ اليوم في حقل تاريخ النشرة
+  document.getElementById("bulletinDate").value = new Date().toISOString().split("T")[0];
 
   const tbody = document.getElementById("ratesBody");
   tbody.innerHTML = CURRENCIES.map(c => `
@@ -332,12 +356,18 @@ async function saveRates() {
     sell: parseFloat(document.getElementById("sell_"+c)?.value)||null,
   })).filter(r => r.buy || r.sell);
 
+  const bulletin = {
+    number: document.getElementById("bulletinNumber")?.value || null,
+    date:   document.getElementById("bulletinDate")?.value || null,
+    url:    document.getElementById("bulletinUrl")?.value || null,
+  };
+
   const res = await fetch(`${API}/admin/rates`, {
     method:"POST",
     headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
-    body: JSON.stringify({rates})
+    body: JSON.stringify({rates, bulletin})
   });
-  if (res.ok) showToast("✅ تم حفظ الأسعار");
+  if (res.ok) showToast("✅ تم حفظ الأسعار والنشرة");
   else showToast("❌ خطأ في الحفظ", true);
 }
 
