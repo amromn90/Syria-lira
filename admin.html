@@ -102,25 +102,15 @@
   <!-- ─── الذهب ─── -->
   <div class="tab-content" id="tab-gold">
     <div class="card">
-      <div class="section-title">🇸🇾 النشرة الرسمية للذهب (عيار 21 و18 فقط)</div>
-      <div class="form-grid three">
-        <div class="form-group"><label>📅 تاريخ النشرة</label><input type="date" id="goldDate"></div>
-        <div class="form-group"><label>⏰ وقت الإصدار</label><input type="time" id="goldTime"></div>
-        <div class="form-group"><label>ملاحظة (اختياري)</label><input type="text" id="goldNote" placeholder="..."></div>
-      </div>
-      <div class="form-grid" style="margin-top:16px">
-        <div class="form-group"><label>عيار 21 — شراء (ل.س)</label><input type="number" id="gold21Buy" placeholder="0"></div>
-        <div class="form-group"><label>عيار 21 — مبيع (ل.س)</label><input type="number" id="gold21Sell" placeholder="0"></div>
-        <div class="form-group"><label>عيار 18 — شراء (ل.س)</label><input type="number" id="gold18Buy" placeholder="0"></div>
-        <div class="form-group"><label>عيار 18 — مبيع (ل.س)</label><input type="number" id="gold18Sell" placeholder="0"></div>
-      </div>
-      <p style="color:#888;font-size:.8rem;margin-top:12px">ℹ️ عيار 24 والأونصة سيُحسبان تلقائياً في الموقع بناءً على السعر العالمي وسعر صرف الدولار — لا حاجة لإدخالهما يدوياً.</p>
-      <button class="save-btn" onclick="saveGold()">💾 حفظ نشرة الذهب</button>
-    </div>
-    <div class="card">
-      <div class="section-title">🌍 الذهب العالمي (تلقائي)</div>
-      <div id="worldGoldPreview" style="color:#C9A84C"></div>
-      <button class="parse-btn" onclick="loadWorldGold()">🔄 تحديث</button>
+      <div class="section-title">✅ الذهب والفضة والبلاتين — تلقائي بالكامل</div>
+      <p style="color:#aaa;font-size:.9rem;line-height:1.8">
+        كل أسعار الذهب (عيار 24/21/18) والفضة والبلاتين — المحلية والعالمية — تُجلب <b style="color:#C9A84C">تلقائياً كل مرة</b>
+        من الموقع الرسمي للهيئة العامة لإدارة المعادن الثمينة (<a href="https://pma.sy" target="_blank" style="color:#C9A84C">pma.sy</a>).
+        <br><br>
+        ما في داعي لأي إدخال يدوي — بس اضغط تحديث تحت للتأكد إن الاتصال شغال ✅
+      </p>
+      <div id="pmaPreview" style="margin-top:16px;color:#C9A84C;font-size:.95rem;line-height:2"></div>
+      <button class="parse-btn" onclick="loadPmaPreview()">🔄 تحديث المعاينة</button>
     </div>
   </div>
 
@@ -177,9 +167,7 @@ function showDashboard() {
   document.getElementById("dashboard").style.display = "block";
   loadRates();
   loadEnergyForm();
-  loadWorldGold();
-  document.getElementById("goldDate").value = new Date().toISOString().split("T")[0];
-  document.getElementById("goldTime").value = new Date().toTimeString().slice(0,5);
+  loadPmaPreview();
 }
 
 function switchTab(name) {
@@ -284,42 +272,42 @@ async function saveRates() {
   }
 }
 
-// ─── الذهب ───
-async function saveGold() {
-  const body = {
-    bulletin_date: document.getElementById("goldDate").value,
-    bulletin_time: document.getElementById("goldTime").value,
-    k21_buy: parseFloat(document.getElementById("gold21Buy").value)||null,
-    k21_sell: parseFloat(document.getElementById("gold21Sell").value)||null,
-    k18_buy: parseFloat(document.getElementById("gold18Buy").value)||null,
-    k18_sell: parseFloat(document.getElementById("gold18Sell").value)||null,
-    note: document.getElementById("goldNote").value||null,
-  };
-  if (!body.k21_buy || !body.k21_sell) {
-    showToast("❌ لازم تدخل شراء ومبيع عيار 21 على الأقل", true);
-    return;
-  }
-  const res = await fetch(`${API}/admin/gold/official`, {
-    method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
-    body: JSON.stringify(body)
-  });
-  if (res.ok) showToast("✅ تم حفظ نشرة الذهب");
-  else showToast("❌ خطأ في الحفظ", true);
-}
-
-async function loadWorldGold() {
-  const div = document.getElementById("worldGoldPreview");
+// ─── الذهب/الفضة/البلاتين — تلقائي من PMA.sy ───
+async function loadPmaPreview() {
+  const div = document.getElementById("pmaPreview");
   div.innerHTML = "⏳ جاري التحميل...";
   try {
-    const res = await fetch(`${API}/api/gold/world`);
-    const d = await res.json();
-    if (d.status === "live") {
-      div.innerHTML = `🌍 الأونصة: <b>$${d.ounce_usd}</b> | عيار24: $${d.karat_24} | عيار21: $${d.karat_21} | عيار18: $${d.karat_18}`;
-    } else {
-      div.innerHTML = `<span style="color:#e74c3c">⚠️ تعذر جلب السعر العالمي</span>`;
+    const [goldOff, silverLocal, platLocal, goldW, silverW] = await Promise.all([
+      fetch(`${API}/api/gold/official`).then(r=>r.json()),
+      fetch(`${API}/api/silver/local`).then(r=>r.json()),
+      fetch(`${API}/api/platinum/local`).then(r=>r.json()),
+      fetch(`${API}/api/gold/world`).then(r=>r.json()),
+      fetch(`${API}/api/silver/world`).then(r=>r.json()),
+    ]);
+
+    let html = "";
+    if (goldOff.status === "ok") {
+      html += `🥇 <b>ذهب محلي</b> — عيار24: ${goldOff.karat_24?.sell_syp||'—'} | عيار21: ${goldOff.karat_21?.sell_syp||'—'} | عيار18: ${goldOff.karat_18?.sell_syp||'—'} ل.س (مبيع)<br>`;
+    } else html += `⚠️ تعذر جلب الذهب المحلي<br>`;
+
+    if (silverLocal.status === "ok") {
+      html += `🥈 <b>فضة محلية</b> — شراء: ${silverLocal.buy_syp} | مبيع: ${silverLocal.sell_syp} ل.س<br>`;
+    } else html += `⚠️ تعذر جلب الفضة المحلية<br>`;
+
+    if (platLocal.status === "ok") {
+      html += `⚪ <b>بلاتين محلي</b> — شراء: ${platLocal.buy_syp} | مبيع: ${platLocal.sell_syp} ل.س<br>`;
+    } else html += `⚠️ تعذر جلب البلاتين<br>`;
+
+    if (goldW.status === "live") {
+      html += `🌍 <b>ذهب عالمي</b> — الأونصة: $${goldW.ounce_usd}<br>`;
     }
+    if (silverW.status === "live") {
+      html += `🌍 <b>فضة عالمية</b> — الأونصة: $${silverW.ounce_usd}`;
+    }
+
+    div.innerHTML = html;
   } catch(e) {
-    div.innerHTML = `<span style="color:#e74c3c">⚠️ خطأ اتصال</span>`;
+    div.innerHTML = `<span style="color:#e74c3c">⚠️ خطأ اتصال: ${e.message}</span>`;
   }
 }
 
