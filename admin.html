@@ -325,33 +325,18 @@ function loadEnergyForm() {
 
 async function saveEnergy() {
   let ok = 0;
-  let debug = [];
   for (let i=0; i<ENERGY_TYPES.length; i++) {
     const e = ENERGY_TYPES[i];
-    const el = document.getElementById("energy_"+i);
-    const rawValue = el ? el.value : "ELEMENT_NOT_FOUND";
-    const price = parseFloat(rawValue);
-    if (!price) { debug.push(`${e.key}: SKIPPED (raw="${rawValue}")`); continue; }
+    const price = parseFloat(document.getElementById("energy_"+i)?.value);
+    if (!price) continue;
     const effectiveDate = document.getElementById("energyDate_"+i)?.value;
-    try {
-      const res = await fetch(`${API}/admin/energy`, {
-        method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
-        body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
-      });
-      const bodyText = await res.text();
-      debug.push(`${e.key}: status=${res.status} body=${bodyText.slice(0,100)}`);
-      if (res.ok) ok++;
-    } catch(err) {
-      debug.push(`${e.key}: FETCH_ERROR ${err.message}`);
-    }
+    const res = await fetch(`${API}/admin/energy`, {
+      method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+      body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
+    });
+    if (res.ok) ok++;
   }
-  console.log("DEBUG energy save:", debug.join(" | "));
-  if (ok > 0) {
-    showToast(`✅ تم حفظ ${ok} أسعار`);
-  } else {
-    alert("تشخيص:\n" + debug.join("\n\n"));
-    showToast("⚠️ أدخل سعراً واحداً على الأقل", true);
-  }
+  showToast(ok > 0 ? `✅ تم حفظ ${ok} أسعار` : "⚠️ أدخل سعراً واحداً على الأقل", ok===0);
 }
 
 function showToast(msg, isError=false) {
