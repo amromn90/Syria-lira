@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة التحكم — SyPRate</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background:#0f1923; color:#e0e0e0; min-height:100vh; }
+
+  /* Login */
+  #loginScreen {
+    display:flex; align-items:center; justify-content:center; min-height:100vh;
+  }
+  .login-box {
+    background:#1a2332; border:1px solid #C9A84C33; border-radius:16px;
+    padding:40px; width:360px; text-align:center;
+  }
+  .login-box h1 { color:#C9A84C; font-size:1.8rem; margin-bottom:8px; }
+  .login-box p { color:#888; margin-bottom:28px; }
+  .login-box input {
+    width:100%; padding:14px; border-radius:10px; border:1px solid #2a3a4a;
+    background:#0f1923; color:#fff; font-size:1rem; margin-bottom:16px; text-align:center;
+  }
+  .login-box button {
+    width:100%; padding:14px; border-radius:10px; border:none;
+    background:linear-gradient(135deg,#C9A84C,#a07830); color:#fff;
+    font-size:1.1rem; font-weight:700; cursor:pointer;
+  }
+
+  /* Dashboard */
+  #dashboard { display:none; }
+  header {
+    background:#1a2332; border-bottom:2px solid #C9A84C44;
+    padding:16px 32px; display:flex; align-items:center; justify-content:space-between;
+  }
+  header h1 { color:#C9A84C; font-size:1.4rem; }
+  .logout-btn {
+    background:#ff4444; color:#fff; border:none; padding:8px 20px;
+    border-radius:8px; cursor:pointer; font-size:0.9rem;
+  }
+
+  /* Tabs */
+  .tabs {
+    display:flex; gap:8px; padding:24px 32px 0;
+    border-bottom:1px solid #2a3a4a;
+  }
+  .tab {
+    padding:10px 24px; border-radius:10px 10px 0 0; cursor:pointer;
+    background:#1a2332; color:#888; border:1px solid #2a3a4a; border-bottom:none;
+    font-size:0.95rem; transition:all 0.2s;
+  }
+  .tab.active { background:#C9A84C; color:#0f1923; font-weight:700; }
+
+  /* Content */
+  .tab-content { display:none; padding:32px; max-width:900px; margin:0 auto; }
+  .tab-content.active { display:block; }
+
+  .section-title {
+    color:#C9A84C; font-size:1.2rem; font-weight:700;
+    margin-bottom:20px; padding-bottom:10px;
+    border-bottom:1px solid #C9A84C33;
+  }
+
+  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .form-grid.three { grid-template-columns:1fr 1fr 1fr; }
+  .form-group { display:flex; flex-direction:column; gap:6px; }
+  .form-group label { color:#aaa; font-size:0.85rem; }
+  .form-group input, .form-group select, .form-group textarea {
+    padding:12px; border-radius:8px; border:1px solid #2a3a4a;
+    background:#0f1923; color:#fff; font-size:0.95rem;
+  }
+  .form-group.full { grid-column:1/-1; }
+
+  .save-btn {
+    margin-top:20px; padding:14px 32px; border-radius:10px; border:none;
+    background:linear-gradient(135deg,#C9A84C,#a07830); color:#0f1923;
+    font-size:1rem; font-weight:700; cursor:pointer; transition:opacity 0.2s;
+  }
+  .save-btn:hover { opacity:0.85; }
+
+  .card {
+    background:#1a2332; border:1px solid #2a3a4a; border-radius:12px;
+    padding:24px; margin-bottom:24px;
+  }
+
+  /* Rates Table */
+  .rates-table { width:100%; border-collapse:collapse; }
+  .rates-table th {
+    background:#C9A84C22; color:#C9A84C; padding:10px 14px;
+    text-align:right; font-size:0.85rem;
+  }
+  .rates-table td { padding:8px 14px; border-bottom:1px solid #1a2332; }
+  .rates-table input {
+    background:#0f1923; border:1px solid #2a3a4a; color:#fff;
+    padding:8px; border-radius:6px; width:140px; text-align:center;
+  }
+  .rates-table tr:hover td { background:#1a2332; }
+
+  /* Energy Table */
+  .energy-row {
+    display:grid; grid-template-columns:2fr 1fr 1fr 2fr;
+    gap:12px; align-items:center; padding:12px 0;
+    border-bottom:1px solid #2a3a4a22;
+  }
+  .energy-row label { color:#aaa; font-size:0.9rem; }
+
+  .paste-area {
+    width:100%; height:100px; background:#0f1923; border:1px solid #2a3a4a;
+    color:#fff; border-radius:8px; padding:12px; font-family:monospace;
+    font-size:0.9rem; resize:none;
+  }
+  .parse-btn {
+    margin-top:8px; padding:10px 20px; border-radius:8px; border:none;
+    background:#2a4a6a; color:#fff; cursor:pointer; font-size:0.9rem;
+  }
+
+  .toast {
+    position:fixed; bottom:30px; left:50%; transform:translateX(-50%);
+    background:#27ae60; color:#fff; padding:14px 28px; border-radius:10px;
+    font-size:1rem; display:none; z-index:9999; font-weight:600;
+  }
+  .toast.error { background:#e74c3c; }
+
+  .status-badge {
+    display:inline-block; padding:4px 12px; border-radius:20px;
+    font-size:0.8rem; font-weight:600;
+    background:#27ae6022; color:#27ae60; border:1px solid #27ae6044;
+  }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="loginScreen">
+  <div class="login-box">
+    <h1>⚙️ لوحة التحكم</h1>
+    <p>SyPRate Admin Panel</p>
+    <input type="password" id="passInput" placeholder="كلمة المرور" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">دخول</button>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard">
+  <header>
+    <h1>⚙️ لوحة تحكم SyPRate</h1>
+    <button class="logout-btn" onclick="logout()">خروج</button>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('currencies')">💱 العملات</div>
+    <div class="tab" onclick="switchTab('gold')">🥇 الذهب</div>
+    <div class="tab" onclick="switchTab('energy')">⛽ الطاقة</div>
+  </div>
+
+  <!-- ─── العملات ─── -->
+  <div class="tab-content active" id="tab-currencies">
+    <div class="card">
+      <div class="section-title">📋 لصق النشرة الرسمية</div>
+      <textarea class="paste-area" id="pasteArea" placeholder="الصق أرقام النشرة هنا..."></textarea>
+      <button class="parse-btn" onclick="parsePaste()">⚡ معالجة تلقائية</button>
+    </div>
+
+    <div class="card">
+      <div class="section-title">📝 تعديل الأسعار يدوياً</div>
+      <table class="rates-table">
+        <thead>
+          <tr>
+            <th>العملة</th>
+            <th>شراء (ل.س)</th>
+            <th>مبيع (ل.س)</th>
+          </tr>
+        </thead>
+        <tbody id="ratesBody"></tbody>
+      </table>
+      <button class="save-btn" onclick="saveRates()">💾 حفظ الأسعار</button>
+    </div>
+  </div>
+
+  <!-- ─── الذهب ─── -->
+  <div class="tab-content" id="tab-gold">
+    <div class="card">
+      <div class="section-title">🇸🇾 إدخال النشرة الرسمية للذهب</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>📅 تاريخ النشرة</label>
+          <input type="date" id="goldDate">
+        </div>
+        <div class="form-group">
+          <label>⏰ وقت الإصدار</label>
+          <input type="time" id="goldTime">
+        </div>
+        <div class="form-group">
+          <label>عيار 24 — سعر الغرام (ل.س)</label>
+          <input type="number" id="gold24" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>عيار 21 — سعر الغرام (ل.س)</label>
+          <input type="number" id="gold21" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>عيار 18 — سعر الغرام (ل.س)</label>
+          <input type="number" id="gold18" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>سعر الأونصة (ل.س)</label>
+          <input type="number" id="goldOunce" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>الليرة الذهبية (ل.س) — اختياري</label>
+          <input type="number" id="goldLira" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>ملاحظة — اختياري</label>
+          <input type="text" id="goldNote" placeholder="...">
+        </div>
+      </div>
+      <button class="save-btn" onclick="saveGold()">💾 حفظ نشرة الذهب</button>
+    </div>
+
+    <div class="card">
+      <div class="section-title">🌍 الذهب العالمي</div>
+      <p style="color:#888; font-size:0.9rem;">يتحدث تلقائياً من الأسواق العالمية — لا يحتاج إدخال يدوي</p>
+      <div id="worldGoldPreview" style="margin-top:16px; color:#C9A84C; font-size:1.1rem;"></div>
+      <button class="parse-btn" style="margin-top:12px" onclick="loadWorldGold()">🔄 تحديث الآن</button>
+    </div>
+  </div>
+
+  <!-- ─── الطاقة ─── -->
+  <div class="tab-content" id="tab-energy">
+    <div class="card">
+      <div class="section-title">⛽ أسعار المحروقات والطاقة</div>
+      <div id="energyForm"></div>
+      <button class="save-btn" onclick="saveEnergy()">💾 حفظ أسعار الطاقة</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = "";
+let TOKEN = localStorage.getItem("syprate_token") || "";
+
+const CURRENCIES = [
+  "USD","EUR","GBP","CHF","JPY","CNY","TRY","SAR","QAR","AED",
+  "KWD","BHD","OMR","JOD","EGP","CAD","DKK","SEK","NOK","AUD","RUB"
+];
+
+const ENERGY_TYPES = [
+  { key:"بنزين 95", unit:"لتر" },
+  { key:"بنزين 90", unit:"لتر" },
+  { key:"مازوت",    unit:"لتر" },
+  { key:"غاز منزلي", unit:"اسطوانة" },
+  { key:"غاز صناعي", unit:"اسطوانة" },
+];
+
+// ─── Login ───────────────────────────────────
+async function doLogin() {
+  const pass = document.getElementById("passInput").value;
+  const res = await fetch(`${API}/admin/login`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({password: pass})
+  });
+  if (res.ok) {
+    const d = await res.json();
+    TOKEN = d.token;
+    localStorage.setItem("syprate_token", TOKEN);
+    showDashboard();
+  } else {
+    showToast("❌ كلمة مرور خاطئة", true);
+  }
+}
+
+function logout() {
+  localStorage.removeItem("syprate_token");
+  location.reload();
+}
+
+function showDashboard() {
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("dashboard").style.display = "block";
+  loadRates();
+  loadEnergyForm();
+  loadWorldGold();
+  // ضع تاريخ اليوم تلقائياً
+  document.getElementById("goldDate").value = new Date().toISOString().split("T")[0];
+  document.getElementById("goldTime").value = new Date().toTimeString().slice(0,5);
+}
+
+// ─── Tabs ────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+  event.target.classList.add("active");
+  document.getElementById("tab-"+name).classList.add("active");
+}
+
+// ─── Currencies ──────────────────────────────
+async function loadRates() {
+  const res = await fetch(`${API}/api/rates`);
+  const data = await res.json();
+  const map = {};
+  data.forEach(r => map[r.currency] = r);
+
+  const tbody = document.getElementById("ratesBody");
+  tbody.innerHTML = CURRENCIES.map(c => `
+    <tr>
+      <td style="color:#C9A84C;font-weight:600">${c}</td>
+      <td><input type="number" id="buy_${c}" value="${map[c]?.buy||""}" placeholder="0"></td>
+      <td><input type="number" id="sell_${c}" value="${map[c]?.sell||""}" placeholder="0"></td>
+    </tr>
+  `).join("");
+}
+
+function parsePaste() {
+  const text = document.getElementById("pasteArea").value;
+  const nums = text.match(/[\d,]+\.?\d*/g)?.map(n => parseFloat(n.replace(/,/g,""))) || [];
+  if (nums.length < 2) { showToast("❌ ما في أرقام كافية", true); return; }
+  // آخر رقمين هم مبيع وشراء
+  const sell = nums[nums.length-1];
+  const buy  = nums[nums.length-2];
+  showToast(`✅ مبيع: ${sell} | شراء: ${buy}`);
+}
+
+async function saveRates() {
+  const rates = CURRENCIES.map(c => ({
+    currency: c,
+    buy:  parseFloat(document.getElementById("buy_"+c)?.value)||null,
+    sell: parseFloat(document.getElementById("sell_"+c)?.value)||null,
+  })).filter(r => r.buy || r.sell);
+
+  const res = await fetch(`${API}/admin/rates`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+    body: JSON.stringify({rates})
+  });
+  if (res.ok) showToast("✅ تم حفظ الأسعار");
+  else showToast("❌ خطأ في الحفظ", true);
+}
+
+// ─── Gold ────────────────────────────────────
+async function saveGold() {
+  const body = {
+    bulletin_date: document.getElementById("goldDate").value,
+    bulletin_time: document.getElementById("goldTime").value,
+    karat_24: parseFloat(document.getElementById("gold24").value)||null,
+    karat_21: parseFloat(document.getElementById("gold21").value)||null,
+    karat_18: parseFloat(document.getElementById("gold18").value)||null,
+    ounce_price: parseFloat(document.getElementById("goldOunce").value)||null,
+    lira_gold: parseFloat(document.getElementById("goldLira").value)||null,
+    note: document.getElementById("goldNote").value||null,
+  };
+
+  const res = await fetch(`${API}/admin/gold/official`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+    body: JSON.stringify(body)
+  });
+  if (res.ok) showToast("✅ تم حفظ نشرة الذهب");
+  else showToast("❌ خطأ في الحفظ", true);
+}
+
+async function loadWorldGold() {
+  const div = document.getElementById("worldGoldPreview");
+  div.innerHTML = "⏳ جاري التحميل...";
+  const res = await fetch(`${API}/api/gold/world`);
+  const d = await res.json();
+  if (d.status === "live") {
+    div.innerHTML = `
+      🌍 الأونصة: <b>$${d.ounce_usd}</b> &nbsp;|&nbsp;
+      عيار 24: <b>$${d.karat_24}</b> &nbsp;|&nbsp;
+      عيار 21: <b>$${d.karat_21}</b> &nbsp;|&nbsp;
+      عيار 18: <b>$${d.karat_18}</b>
+      <br><small style="color:#666">آخر تحديث: ${new Date(d.updated_at).toLocaleTimeString("ar")}</small>
+    `;
+  } else {
+    div.innerHTML = `<span style="color:#e74c3c">⚠️ تعذر جلب السعر العالمي</span>`;
+  }
+}
+
+// ─── Energy ──────────────────────────────────
+function loadEnergyForm() {
+  const div = document.getElementById("energyForm");
+  div.innerHTML = `
+    <div style="display:grid;grid-template-columns:2fr 1.5fr 2fr;gap:10px;padding:10px 0;color:#C9A84C;font-weight:600;font-size:0.85rem;border-bottom:1px solid #2a3a4a">
+      <span>نوع الوقود</span>
+      <span>السعر (ل.س)</span>
+      <span>تاريخ التطبيق</span>
+    </div>
+    ${ENERGY_TYPES.map(e => `
+      <div style="display:grid;grid-template-columns:2fr 1.5fr 2fr;gap:10px;padding:12px 0;align-items:center;border-bottom:1px solid #2a3a4a11">
+        <span style="color:#e0e0e0">${e.key} <small style="color:#666">(/${e.unit})</small></span>
+        <input type="number" id="energy_${e.key}" placeholder="0" 
+          style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff;font-size:0.95rem">
+        <input type="date" id="energyDate_${e.key}"
+          value="${new Date().toISOString().split('T')[0]}"
+          style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff;font-size:0.9rem">
+      </div>
+    `).join("")}
+  `;
+}
+
+async function saveEnergy() {
+  let ok = 0;
+  for (const e of ENERGY_TYPES) {
+    const price = parseFloat(document.getElementById("energy_"+e.key)?.value);
+    if (!price) continue;
+    const effectiveDate = document.getElementById("energyDate_"+e.key)?.value;
+    const res = await fetch(`${API}/admin/energy`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+      body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
+    });
+    if (res.ok) ok++;
+  }
+  showToast(ok > 0 ? `✅ تم حفظ ${ok} أسعار` : "⚠️ أدخل سعراً واحداً على الأقل", ok===0);
+}
+
+// ─── Toast ───────────────────────────────────
+function showToast(msg, isError=false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast" + (isError?" error":"");
+  t.style.display = "block";
+  setTimeout(() => t.style.display = "none", 3000);
+}
+
+// ─── Auto-check token ────────────────────────
+if (TOKEN) {
+  fetch(`${API}/api/rates`).then(r => {
+    if (r.ok) showDashboard();
+  });
+}
+</script>
+</body>
+</html>
