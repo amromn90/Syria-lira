@@ -2,11 +2,12 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict
 import asyncpg
 import os
 import hashlib
 import httpx
+import json
 from datetime import datetime, date
 
 app = FastAPI()
@@ -19,9 +20,8 @@ app.add_middleware(
 )
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-ADMIN_HASH = "04067de8cf70fc76077836b9f28020fc7214e866437ed7071a66bd9efb450d17"
-SALT = "syprate-fixed-salt"
-FIXED_TOKEN = hashlib.sha256(f"{ADMIN_HASH}{SALT}".encode()).hexdigest()
+ADMIN_PASSWORD_HASH = "04067de8cf70fc76077836b9f28020fc7214e866437ed7071a66bd9efb450d17"
+ADMIN_TOKEN = hashlib.sha256((ADMIN_PASSWORD_HASH + "syprate-fixed-salt").encode()).hexdigest()
 
 async def get_db():
     conn = await asyncpg.connect(DATABASE_URL)
@@ -30,39 +30,41 @@ async def get_db():
     finally:
         await conn.close()
 
+DEFAULT_CACHED = {
+    "buy": None, "sell": None, "mid": None,
+    "date": None, "updated_at": None,
+    "source": "مصرف سوريا المركزي",
+    "status": "initializing",
+    "manual": False,
+    "bulletin_no": None,
+    "bulletin_url": None,
+    "currencies": {}
+}
+
 @app.on_event("startup")
 async def startup():
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        # جدول العملات الجديد
+        # ═══ جدول العملات — نفس الهيكل الأصلي (key/value JSON blob) ═══
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS rates_v2 (
-                id SERIAL PRIMARY KEY,
-                currency TEXT NOT NULL UNIQUE,
-                buy NUMERIC,
-                sell NUMERIC,
+            CREATE TABLE IF NOT EXISTS rates (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # جدول النشرة
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS bulletin_info (
-                id SERIAL PRIMARY KEY,
-                bulletin_number TEXT,
-                bulletin_date TEXT,
-                bulletin_url TEXT,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        # جدول الزيارات
+        # ═══ جدول الزيارات — نفس الهيكل الأصلي ═══
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS visits (
-                id SERIAL PRIMARY KEY,
-                visit_date TEXT NOT NULL UNIQUE,
-                count INTEGER DEFAULT 0
+                key TEXT PRIMARY KEY,
+                value TEXT DEFAULT '0'
             )
         """)
-        # جدول الذهب الرسمي
+        await conn.execute("INSERT INTO visits (key,value) VALUES ('total','0') ON CONFLICT DO NOTHING")
+        await conn.execute("INSERT INTO visits (key,value) VALUES ('today','0') ON CONFLICT DO NOTHING")
+        await conn.execute("INSERT INTO visits (key,value) VALUES ('today_date','') ON CONFLICT DO NOTHING")
+
+        # ═══ جداول جديدة — الذهب والطاقة (لا تؤثر على العملات) ═══
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS gold_official (
                 id SERIAL PRIMARY KEY,
@@ -77,7 +79,6 @@ async def startup():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # جدول الطاقة
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS energy_prices (
                 id SERIAL PRIMARY KEY,
@@ -91,7 +92,7 @@ async def startup():
         """)
         await conn.execute("""
             INSERT INTO energy_prices (fuel_type, price, unit)
-            VALUES 
+            VALUES
                 ('بنزين 95', 0, 'لتر'),
                 ('بنزين 90', 0, 'لتر'),
                 ('مازوت', 0, 'لتر'),
@@ -102,21 +103,120 @@ async def startup():
     finally:
         await conn.close()
 
-# ═══════════════════════════════
-# PUBLIC APIs
-# ═══════════════════════════════
+# ═══════════════════════════════════════════
+# العملات — نفس الـ API الأصلي بالضبط
+# ═══════════════════════════════════════════
+
+@app.get("/")
+def root():
+    return {"message": "Syrian Rates API ✅"}
 
 @app.get("/api/rates")
 async def get_rates(db=Depends(get_db)):
-    rows = await db.fetch("SELECT currency, buy, sell, updated_at FROM rates_v2 ORDER BY id")
-    return [dict(r) for r in rows]
+    row = await db.fetchrow("SELECT value FROM rates WHERE key = 'cached'")
+    if not row:
+        return DEFAULT_CACHED
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return DEFAULT_CACHED
 
-@app.get("/api/bulletin")
-async def get_bulletin(db=Depends(get_db)):
-    row = await db.fetchrow("SELECT * FROM bulletin_info ORDER BY updated_at DESC LIMIT 1")
+@app.get("/api/health")
+async def health(db=Depends(get_db)):
+    row = await db.fetchrow("SELECT value, updated_at FROM rates WHERE key = 'cached'")
     if not row:
         return {"status": "no_data"}
-    return dict(row)
+    data = json.loads(row["value"])
+    return {"status": data.get("status"), "last_updated": str(row["updated_at"])}
+
+class CurrencyRate(BaseModel):
+    buy: float
+    sell: float
+
+class RatesUpdate(BaseModel):
+    buy: float
+    sell: float
+    date: str
+    bulletin_no: str = ""
+    bulletin_url: str = ""
+    currencies: Dict[str, CurrencyRate] = {}
+
+def verify_token(request: Request):
+    token = request.headers.get("X-Admin-Token", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+class LoginRequest(BaseModel):
+    password: str
+
+@app.post("/admin/login")
+async def login(req: LoginRequest):
+    h = hashlib.sha256(req.password.encode()).hexdigest()
+    if h != ADMIN_PASSWORD_HASH:
+        raise HTTPException(status_code=401, detail="كلمة مرور خاطئة")
+    return {"token": ADMIN_TOKEN}
+
+@app.post("/admin/rates")
+async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
+    verify_token(request)
+    mid = round((req.buy + req.sell) / 2, 4)
+    payload = {
+        "buy": req.buy,
+        "sell": req.sell,
+        "mid": mid,
+        "date": req.date,
+        "updated_at": datetime.now().isoformat(),
+        "source": "مصرف سوريا المركزي",
+        "status": "ok",
+        "manual": True,
+        "bulletin_no": req.bulletin_no or None,
+        "bulletin_url": req.bulletin_url or None,
+        "currencies": {k: {"buy": v.buy, "sell": v.sell} for k, v in req.currencies.items()}
+    }
+    value_json = json.dumps(payload, ensure_ascii=False)
+    await db.execute("""
+        INSERT INTO rates (key, value, updated_at)
+        VALUES ('cached', $1, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
+    """, value_json)
+    return {"status": "ok"}
+
+# ═══════════════════════════════════════════
+# الزيارات — نفس الأصلي
+# ═══════════════════════════════════════════
+
+@app.post("/api/visit")
+async def record_visit(db=Depends(get_db)):
+    today = date.today().isoformat()
+    row = await db.fetchrow("SELECT value FROM visits WHERE key='today_date'")
+    stored_date = row["value"] if row else ""
+
+    if stored_date != today:
+        await db.execute("UPDATE visits SET value = $1 WHERE key = 'today_date'", today)
+        await db.execute("UPDATE visits SET value = '0' WHERE key = 'today'")
+
+    total_row = await db.fetchrow("SELECT value FROM visits WHERE key='total'")
+    today_row = await db.fetchrow("SELECT value FROM visits WHERE key='today'")
+    total = int(total_row["value"] or 0) + 1
+    today_count = int(today_row["value"] or 0) + 1
+
+    await db.execute("UPDATE visits SET value = $1 WHERE key = 'total'", str(total))
+    await db.execute("UPDATE visits SET value = $1 WHERE key = 'today'", str(today_count))
+
+    return {"total": total, "today": today}
+
+@app.get("/api/visits")
+async def get_visits(db=Depends(get_db)):
+    total_row = await db.fetchrow("SELECT value FROM visits WHERE key='total'")
+    today_row = await db.fetchrow("SELECT value FROM visits WHERE key='today'")
+    return {
+        "total": int(total_row["value"] or 0) if total_row else 0,
+        "today": int(today_row["value"] or 0) if today_row else 0,
+    }
+
+# ═══════════════════════════════════════════
+# الذهب — ميزات جديدة (منفصلة تماماً عن العملات)
+# ═══════════════════════════════════════════
 
 @app.get("/api/gold/official")
 async def get_gold_official(db=Depends(get_db)):
@@ -164,73 +264,6 @@ async def get_silver_world():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/api/energy")
-async def get_energy(db=Depends(get_db)):
-    rows = await db.fetch("SELECT * FROM energy_prices ORDER BY id")
-    return [dict(r) for r in rows]
-
-@app.post("/api/visit")
-async def record_visit(db=Depends(get_db)):
-    today = date.today().isoformat()
-    await db.execute("""
-        INSERT INTO visits (visit_date, count) VALUES ($1, 1)
-        ON CONFLICT (visit_date) DO UPDATE SET count = visits.count + 1
-    """, today)
-    row = await db.fetchrow("SELECT SUM(count) as total FROM visits")
-    return {"total": int(row["total"] or 0), "today": today}
-
-# ═══════════════════════════════
-# ADMIN APIs
-# ═══════════════════════════════
-
-def verify_token(request: Request):
-    token = request.headers.get("X-Admin-Token", "")
-    if token != FIXED_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-class LoginRequest(BaseModel):
-    password: str
-
-@app.post("/admin/login")
-async def login(req: LoginRequest):
-    h = hashlib.sha256(req.password.encode()).hexdigest()
-    if h != ADMIN_HASH:
-        raise HTTPException(status_code=401, detail="كلمة مرور خاطئة")
-    return {"token": FIXED_TOKEN}
-
-class RateItem(BaseModel):
-    currency: str
-    buy: Optional[float] = None
-    sell: Optional[float] = None
-
-class BulletinInfo(BaseModel):
-    number: Optional[str] = None
-    date: Optional[str] = None
-    url: Optional[str] = None
-
-class RatesUpdate(BaseModel):
-    rates: list
-    bulletin: Optional[BulletinInfo] = None
-
-@app.post("/admin/rates")
-async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
-    verify_token(request)
-    for r in req.rates:
-        await db.execute("""
-            INSERT INTO rates_v2 (currency, buy, sell)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (currency) DO UPDATE SET buy=$2, sell=$3, updated_at=NOW()
-        """, r["currency"],
-            float(r["buy"]) if r.get("buy") else None,
-            float(r["sell"]) if r.get("sell") else None)
-    if req.bulletin and (req.bulletin.number or req.bulletin.date):
-        b_date = str(req.bulletin.date) if req.bulletin.date else None
-        await db.execute("""
-            INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
-            VALUES ($1, $2::text, $3)
-        """, req.bulletin.number, b_date, req.bulletin.url)
-    return {"status": "ok"}
-
 class GoldOfficialUpdate(BaseModel):
     bulletin_date: Optional[str] = None
     bulletin_time: Optional[str] = None
@@ -251,6 +284,15 @@ async def update_gold_official(req: GoldOfficialUpdate, request: Request, db=Dep
     """, req.bulletin_date, req.bulletin_time, req.karat_24, req.karat_21,
          req.karat_18, req.ounce_price, req.lira_gold, req.note)
     return {"status": "ok"}
+
+# ═══════════════════════════════════════════
+# الطاقة — ميزة جديدة
+# ═══════════════════════════════════════════
+
+@app.get("/api/energy")
+async def get_energy(db=Depends(get_db)):
+    rows = await db.fetch("SELECT * FROM energy_prices ORDER BY id")
+    return [dict(r) for r in rows]
 
 class EnergyUpdate(BaseModel):
     fuel_type: str
