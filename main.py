@@ -185,7 +185,7 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
 # الزيارات — نفس الأصلي
 # ═══════════════════════════════════════════
 
-@app.post("/api/visit")
+@app.get("/api/visit")
 async def record_visit(db=Depends(get_db)):
     today = date.today().isoformat()
     row = await db.fetchrow("SELECT value FROM visits WHERE key='today_date'")
@@ -203,16 +203,7 @@ async def record_visit(db=Depends(get_db)):
     await db.execute("UPDATE visits SET value = $1 WHERE key = 'total'", str(total))
     await db.execute("UPDATE visits SET value = $1 WHERE key = 'today'", str(today_count))
 
-    return {"total": total, "today": today}
-
-@app.get("/api/visits")
-async def get_visits(db=Depends(get_db)):
-    total_row = await db.fetchrow("SELECT value FROM visits WHERE key='total'")
-    today_row = await db.fetchrow("SELECT value FROM visits WHERE key='today'")
-    return {
-        "total": int(total_row["value"] or 0) if total_row else 0,
-        "today": int(today_row["value"] or 0) if today_row else 0,
-    }
+    return {"total": total, "today": today_count}
 
 # ═══════════════════════════════════════════
 # الذهب — ميزات جديدة (منفصلة تماماً عن العملات)
@@ -229,9 +220,9 @@ async def get_gold_official(db=Depends(get_db)):
 async def get_gold_world():
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://metals.live/api/spot/gold")
+            r = await client.get("https://api.gold-api.com/price/XAU")
             data = r.json()
-            price_usd = float(data[0]["price"])
+            price_usd = float(data["price"])
             gram_24 = price_usd / 31.1035
             return {
                 "ounce_usd": round(price_usd, 2),
@@ -249,9 +240,9 @@ async def get_gold_world():
 async def get_silver_world():
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://metals.live/api/spot/silver")
+            r = await client.get("https://api.gold-api.com/price/XAG")
             data = r.json()
-            price_usd = float(data[0]["price"])
+            price_usd = float(data["price"])
             gram = price_usd / 31.1035
             return {
                 "ounce_usd": round(price_usd, 2),
