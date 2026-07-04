@@ -325,9 +325,13 @@ function loadEnergyForm() {
 
 async function saveEnergy() {
   let ok = 0;
+  let debug = [];
   for (let i=0; i<ENERGY_TYPES.length; i++) {
     const e = ENERGY_TYPES[i];
-    const price = parseFloat(document.getElementById("energy_"+i)?.value);
+    const el = document.getElementById("energy_"+i);
+    const rawValue = el ? el.value : "ELEMENT_NOT_FOUND";
+    const price = parseFloat(rawValue);
+    debug.push(`${e.key}: raw="${rawValue}" parsed=${price}`);
     if (!price) continue;
     const effectiveDate = document.getElementById("energyDate_"+i)?.value;
     const res = await fetch(`${API}/admin/energy`, {
@@ -336,7 +340,13 @@ async function saveEnergy() {
     });
     if (res.ok) ok++;
   }
-  showToast(ok > 0 ? `✅ تم حفظ ${ok} أسعار` : "⚠️ أدخل سعراً واحداً على الأقل", ok===0);
+  console.log("DEBUG energy save:", debug.join(" | "));
+  if (ok > 0) {
+    showToast(`✅ تم حفظ ${ok} أسعار`);
+  } else {
+    alert("تشخيص:\n" + debug.join("\n"));
+    showToast("⚠️ أدخل سعراً واحداً على الأقل", true);
+  }
 }
 
 function showToast(msg, isError=false) {
