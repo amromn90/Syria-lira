@@ -69,6 +69,16 @@ async def startup():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # جدول معلومات النشرة
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bulletin_info (
+                id SERIAL PRIMARY KEY,
+                bulletin_number TEXT,
+                bulletin_date DATE,
+                bulletin_url TEXT,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         # جدول الطاقة
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS energy_prices (
@@ -104,6 +114,14 @@ async def startup():
 async def get_rates(db=Depends(get_db)):
     rows = await db.fetch("SELECT currency, buy, sell, updated_at FROM rates ORDER BY id")
     return [dict(r) for r in rows]
+
+# معلومات النشرة
+@app.get("/api/bulletin")
+async def get_bulletin(db=Depends(get_db)):
+    row = await db.fetchrow("SELECT * FROM bulletin_info ORDER BY updated_at DESC LIMIT 1")
+    if not row:
+        return {"status": "no_data"}
+    return dict(row)
 
 # الذهب الرسمي
 @app.get("/api/gold/official")
@@ -193,8 +211,14 @@ async def login(req: LoginRequest):
     return {"token": FIXED_TOKEN}
 
 # تحديث العملات
+class BulletinInfo(BaseModel):
+    number: Optional[str] = None
+    date: Optional[str] = None
+    url: Optional[str] = None
+
 class RatesUpdate(BaseModel):
     rates: list
+    bulletin: Optional[BulletinInfo] = None
 
 @app.post("/admin/rates")
 async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
@@ -205,6 +229,12 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
             "INSERT INTO rates (currency, buy, sell) VALUES ($1, $2, $3)",
             r["currency"], r.get("buy"), r.get("sell")
         )
+    # حفظ معلومات النشرة
+    if req.bulletin:
+        await db.execute("""
+            INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
+            VALUES ($1, $2, $3)
+        """, req.bulletin.number, req.bulletin.date, req.bulletin.url)
     return {"status": "ok"}
 
 # تحديث الذهب الرسمي
