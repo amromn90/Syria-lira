@@ -64,20 +64,8 @@ async def startup():
         await conn.execute("INSERT INTO visits (key,value) VALUES ('today','0') ON CONFLICT DO NOTHING")
         await conn.execute("INSERT INTO visits (key,value) VALUES ('today_date','') ON CONFLICT DO NOTHING")
 
-        # ═══ جداول جديدة — الذهب والطاقة (لا تؤثر على العملات) ═══
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_official (
-                id SERIAL PRIMARY KEY,
-                bulletin_date TEXT,
-                bulletin_time TEXT,
-                k21_buy NUMERIC,
-                k21_sell NUMERIC,
-                k18_buy NUMERIC,
-                k18_sell NUMERIC,
-                note TEXT,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
+        # ═══ جداول جديدة — الطاقة (لا تؤثر على العملات) ═══
+        # ملاحظة: الذهب والفضة والبلاتين الآن تلقائية 100% من PMA.sy - لا حاجة لجدول محلي
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS energy_prices (
                 id SERIAL PRIMARY KEY,
@@ -87,6 +75,16 @@ async def startup():
                 effective_date TEXT,
                 note TEXT,
                 updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS energy_price_history (
+                id SERIAL PRIMARY KEY,
+                fuel_type TEXT NOT NULL,
+                price NUMERIC NOT NULL,
+                unit TEXT DEFAULT 'لتر',
+                effective_date TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
             )
         """)
         await conn.execute("""
@@ -208,20 +206,84 @@ async def record_visit(db=Depends(get_db)):
 # الذهب — ميزات جديدة (منفصلة تماماً عن العملات)
 # ═══════════════════════════════════════════
 
+PMA_ITEM_URL = "https://admin.pma.sy/pma_project/public/api/item?perPage=100"
+PMA_WORLD_URL = "https://admin.pma.sy/pma_project/public/api/gold-prices"
+
+async def fetch_pma_items():
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(PMA_ITEM_URL)
+        return r.json().get("data", [])
+
+def find_pma_item(items, name_contains):
+    for it in items:
+        if name_contains in it.get("name", ""):
+            return it
+    return None
+
+def shape_local_item(it):
+    if not it:
+        return None
+    syp = it["pricing"].get("syp", {})
+    usd = it["pricing"].get("usd", {})
+    return {
+        "name": it["name"],
+        "buy_syp": float(syp.get("buy")) if syp.get("buy") else None,
+        "sell_syp": float(syp.get("sale")) if syp.get("sale") else None,
+        "buy_usd": float(usd.get("buy")) if usd.get("buy") else None,
+        "sell_usd": float(usd.get("sale")) if usd.get("sale") else None,
+        "updated_at": it.get("updated_at"),
+    }
+
 @app.get("/api/gold/official")
-async def get_gold_official(db=Depends(get_db)):
-    row = await db.fetchrow("SELECT * FROM gold_official ORDER BY updated_at DESC LIMIT 1")
-    if not row:
-        return {"status": "no_data"}
-    return dict(row)
+async def get_gold_official():
+    try:
+        items = await fetch_pma_items()
+        k24 = shape_local_item(find_pma_item(items, "عيار 24"))
+        k21 = shape_local_item(find_pma_item(items, "عيار 21"))
+        k18 = shape_local_item(find_pma_item(items, "عيار 18"))
+        if not (k21 or k24 or k18):
+            return {"status": "no_data"}
+        return {
+            "status": "ok",
+            "source": "الهيئة العامة لإدارة المعادن الثمينة (PMA.sy)",
+            "source_url": "https://pma.sy",
+            "karat_24": k24, "karat_21": k21, "karat_18": k18,
+            "updated_at": (k21 or k24 or k18)["updated_at"],
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/silver/local")
+async def get_silver_local():
+    try:
+        items = await fetch_pma_items()
+        s = shape_local_item(find_pma_item(items, "فضة"))
+        if not s:
+            return {"status": "no_data"}
+        return {"status": "ok", "source": "الهيئة العامة لإدارة المعادن الثمينة (PMA.sy)",
+                "source_url": "https://pma.sy", **s}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/platinum/local")
+async def get_platinum_local():
+    try:
+        items = await fetch_pma_items()
+        p = shape_local_item(find_pma_item(items, "بلاتين"))
+        if not p:
+            return {"status": "no_data"}
+        return {"status": "ok", "source": "الهيئة العامة لإدارة المعادن الثمينة (PMA.sy)",
+                "source_url": "https://pma.sy", **p}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/gold/world")
 async def get_gold_world():
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://api.gold-api.com/price/XAU")
-            data = r.json()
-            price_usd = float(data["price"])
+            r = await client.get(PMA_WORLD_URL)
+            item = r.json()["items"][0]
+            price_usd = float(item["xauPrice"])
             gram_24 = price_usd / 31.1035
             return {
                 "ounce_usd": round(price_usd, 2),
@@ -229,7 +291,11 @@ async def get_gold_world():
                 "karat_22": round(gram_24 * (22/24), 2),
                 "karat_21": round(gram_24 * (21/24), 2),
                 "karat_18": round(gram_24 * (18/24), 2),
+                "change": round(float(item.get("chgXau",0)), 2),
+                "change_pct": round(float(item.get("pcXau",0)), 3),
                 "updated_at": datetime.now().isoformat(),
+                "source": "Bullion Vault / PMA.sy",
+                "source_url": "https://pma.sy",
                 "status": "live"
             }
     except Exception as e:
@@ -239,40 +305,26 @@ async def get_gold_world():
 async def get_silver_world():
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://api.gold-api.com/price/XAG")
-            data = r.json()
-            price_usd = float(data["price"])
+            r = await client.get(PMA_WORLD_URL)
+            item = r.json()["items"][0]
+            price_usd = float(item["xagPrice"])
             gram = price_usd / 31.1035
             return {
                 "ounce_usd": round(price_usd, 2),
                 "silver_999": round(gram, 2),
                 "silver_925": round(gram * 0.925, 2),
                 "silver_900": round(gram * 0.900, 2),
+                "change": round(float(item.get("chgXag",0)), 4),
+                "change_pct": round(float(item.get("pcXag",0)), 3),
                 "updated_at": datetime.now().isoformat(),
+                "source": "Bullion Vault / PMA.sy",
+                "source_url": "https://pma.sy",
                 "status": "live"
             }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-class GoldOfficialUpdate(BaseModel):
-    bulletin_date: Optional[str] = None
-    bulletin_time: Optional[str] = None
-    k21_buy: Optional[float] = None
-    k21_sell: Optional[float] = None
-    k18_buy: Optional[float] = None
-    k18_sell: Optional[float] = None
-    note: Optional[str] = None
-
-@app.post("/admin/gold/official")
-async def update_gold_official(req: GoldOfficialUpdate, request: Request, db=Depends(get_db)):
-    verify_token(request)
-    await db.execute("""
-        INSERT INTO gold_official
-            (bulletin_date, bulletin_time, k21_buy, k21_sell, k18_buy, k18_sell, note)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-    """, req.bulletin_date, req.bulletin_time, req.k21_buy, req.k21_sell,
-         req.k18_buy, req.k18_sell, req.note)
-    return {"status": "ok"}
+# ملاحظة: تم إلغاء الإدخال اليدوي للذهب - كل البيانات تلقائية 100% من PMA.sy
 
 # ═══════════════════════════════════════════
 # الطاقة — ميزة جديدة
@@ -281,6 +333,11 @@ async def update_gold_official(req: GoldOfficialUpdate, request: Request, db=Dep
 @app.get("/api/energy")
 async def get_energy(db=Depends(get_db)):
     rows = await db.fetch("SELECT * FROM energy_prices ORDER BY id")
+    return [dict(r) for r in rows]
+
+@app.get("/api/energy/history")
+async def get_energy_history(db=Depends(get_db)):
+    rows = await db.fetch("SELECT * FROM energy_price_history ORDER BY created_at ASC")
     return [dict(r) for r in rows]
 
 class EnergyUpdate(BaseModel):
@@ -299,6 +356,10 @@ async def update_energy(req: EnergyUpdate, request: Request, db=Depends(get_db))
         ON CONFLICT (fuel_type) DO UPDATE SET
             price=$2, unit=$3, effective_date=$4, note=$5, updated_at=NOW()
     """, req.fuel_type, req.price, req.unit, req.effective_date, req.note)
+    await db.execute("""
+        INSERT INTO energy_price_history (fuel_type, price, unit, effective_date)
+        VALUES ($1,$2,$3,$4)
+    """, req.fuel_type, req.price, req.unit, req.effective_date)
     return {"status": "ok"}
 
 @app.get("/admin", response_class=HTMLResponse)
