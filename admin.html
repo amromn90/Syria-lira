@@ -340,13 +340,32 @@ async function loadRates() {
 }
 
 function parsePaste() {
-  const text = document.getElementById("pasteArea").value;
-  const nums = text.match(/[\d,]+\.?\d*/g)?.map(n => parseFloat(n.replace(/,/g,""))) || [];
-  if (nums.length < 2) { showToast("❌ ما في أرقام كافية", true); return; }
-  // آخر رقمين هم مبيع وشراء
-  const sell = nums[nums.length-1];
-  const buy  = nums[nums.length-2];
-  showToast(`✅ مبيع: ${sell} | شراء: ${buy}`);
+  const text = document.getElementById("pasteArea").value.trim();
+  if (!text) { showToast("❌ الصق النص أولاً", true); return; }
+
+  let filled = 0;
+  const lines = text.split("\n");
+
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    // كل سطر: رمز العملة + شراء + مبيع
+    // مثال: USD 121.50 122.50
+    if (parts.length >= 3) {
+      const code = parts[0].toUpperCase();
+      const buy  = parseFloat(parts[1]);
+      const sell = parseFloat(parts[2]);
+      const buyEl  = document.getElementById("buy_"  + code);
+      const sellEl = document.getElementById("sell_" + code);
+      if (buyEl && sellEl && !isNaN(buy) && !isNaN(sell)) {
+        buyEl.value  = buy;
+        sellEl.value = sell;
+        filled++;
+      }
+    }
+  }
+
+  if (filled > 0) showToast(`✅ تم ملء ${filled} عملة تلقائياً`);
+  else showToast("❌ ما قدر يقرأ البيانات — تأكد من الصيغة", true);
 }
 
 async function saveRates() {
