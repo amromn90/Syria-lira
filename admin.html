@@ -331,20 +331,25 @@ async function saveEnergy() {
     const el = document.getElementById("energy_"+i);
     const rawValue = el ? el.value : "ELEMENT_NOT_FOUND";
     const price = parseFloat(rawValue);
-    debug.push(`${e.key}: raw="${rawValue}" parsed=${price}`);
-    if (!price) continue;
+    if (!price) { debug.push(`${e.key}: SKIPPED (raw="${rawValue}")`); continue; }
     const effectiveDate = document.getElementById("energyDate_"+i)?.value;
-    const res = await fetch(`${API}/admin/energy`, {
-      method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
-      body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
-    });
-    if (res.ok) ok++;
+    try {
+      const res = await fetch(`${API}/admin/energy`, {
+        method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+        body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
+      });
+      const bodyText = await res.text();
+      debug.push(`${e.key}: status=${res.status} body=${bodyText.slice(0,100)}`);
+      if (res.ok) ok++;
+    } catch(err) {
+      debug.push(`${e.key}: FETCH_ERROR ${err.message}`);
+    }
   }
   console.log("DEBUG energy save:", debug.join(" | "));
   if (ok > 0) {
     showToast(`✅ تم حفظ ${ok} أسعار`);
   } else {
-    alert("تشخيص:\n" + debug.join("\n"));
+    alert("تشخيص:\n" + debug.join("\n\n"));
     showToast("⚠️ أدخل سعراً واحداً على الأقل", true);
   }
 }
