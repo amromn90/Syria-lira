@@ -36,7 +36,14 @@ async def get_db():
 async def startup():
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        # جدول العملات
+        # جدول العملات - مع migration صحيح
+        col = await conn.fetchval("""
+            SELECT column_name FROM information_schema.columns 
+            WHERE table_name='rates' AND column_name='currency'
+        """)
+        if not col:
+            # الجدول قديم أو ما في عمود currency - احذف وأعد
+            await conn.execute("DROP TABLE IF EXISTS rates CASCADE")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS rates (
                 id SERIAL PRIMARY KEY,
