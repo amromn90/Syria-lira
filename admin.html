@@ -102,17 +102,19 @@
   <!-- ─── الذهب ─── -->
   <div class="tab-content" id="tab-gold">
     <div class="card">
-      <div class="section-title">🇸🇾 النشرة الرسمية للذهب</div>
-      <div class="form-grid">
+      <div class="section-title">🇸🇾 النشرة الرسمية للذهب (عيار 21 و18 فقط)</div>
+      <div class="form-grid three">
         <div class="form-group"><label>📅 تاريخ النشرة</label><input type="date" id="goldDate"></div>
         <div class="form-group"><label>⏰ وقت الإصدار</label><input type="time" id="goldTime"></div>
-        <div class="form-group"><label>عيار 24 (ل.س)</label><input type="number" id="gold24" placeholder="0"></div>
-        <div class="form-group"><label>عيار 21 (ل.س)</label><input type="number" id="gold21" placeholder="0"></div>
-        <div class="form-group"><label>عيار 18 (ل.س)</label><input type="number" id="gold18" placeholder="0"></div>
-        <div class="form-group"><label>الأونصة (ل.س)</label><input type="number" id="goldOunce" placeholder="0"></div>
-        <div class="form-group"><label>الليرة الذهبية (اختياري)</label><input type="number" id="goldLira" placeholder="0"></div>
-        <div class="form-group"><label>ملاحظة</label><input type="text" id="goldNote" placeholder="..."></div>
+        <div class="form-group"><label>ملاحظة (اختياري)</label><input type="text" id="goldNote" placeholder="..."></div>
       </div>
+      <div class="form-grid" style="margin-top:16px">
+        <div class="form-group"><label>عيار 21 — شراء (ل.س)</label><input type="number" id="gold21Buy" placeholder="0"></div>
+        <div class="form-group"><label>عيار 21 — مبيع (ل.س)</label><input type="number" id="gold21Sell" placeholder="0"></div>
+        <div class="form-group"><label>عيار 18 — شراء (ل.س)</label><input type="number" id="gold18Buy" placeholder="0"></div>
+        <div class="form-group"><label>عيار 18 — مبيع (ل.س)</label><input type="number" id="gold18Sell" placeholder="0"></div>
+      </div>
+      <p style="color:#888;font-size:.8rem;margin-top:12px">ℹ️ عيار 24 والأونصة سيُحسبان تلقائياً في الموقع بناءً على السعر العالمي وسعر صرف الدولار — لا حاجة لإدخالهما يدوياً.</p>
       <button class="save-btn" onclick="saveGold()">💾 حفظ نشرة الذهب</button>
     </div>
     <div class="card">
@@ -287,13 +289,16 @@ async function saveGold() {
   const body = {
     bulletin_date: document.getElementById("goldDate").value,
     bulletin_time: document.getElementById("goldTime").value,
-    karat_24: parseFloat(document.getElementById("gold24").value)||null,
-    karat_21: parseFloat(document.getElementById("gold21").value)||null,
-    karat_18: parseFloat(document.getElementById("gold18").value)||null,
-    ounce_price: parseFloat(document.getElementById("goldOunce").value)||null,
-    lira_gold: parseFloat(document.getElementById("goldLira").value)||null,
+    k21_buy: parseFloat(document.getElementById("gold21Buy").value)||null,
+    k21_sell: parseFloat(document.getElementById("gold21Sell").value)||null,
+    k18_buy: parseFloat(document.getElementById("gold18Buy").value)||null,
+    k18_sell: parseFloat(document.getElementById("gold18Sell").value)||null,
     note: document.getElementById("goldNote").value||null,
   };
+  if (!body.k21_buy || !body.k21_sell) {
+    showToast("❌ لازم تدخل شراء ومبيع عيار 21 على الأقل", true);
+    return;
+  }
   const res = await fetch(`${API}/admin/gold/official`, {
     method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
     body: JSON.stringify(body)
@@ -321,21 +326,22 @@ async function loadWorldGold() {
 // ─── الطاقة ───
 function loadEnergyForm() {
   const div = document.getElementById("energyForm");
-  div.innerHTML = ENERGY_TYPES.map(e => `
+  div.innerHTML = ENERGY_TYPES.map((e,i) => `
     <div style="display:grid;grid-template-columns:2fr 1.5fr 2fr;gap:10px;padding:12px 0;align-items:center;border-bottom:1px solid #2a3a4a22">
       <span>${e.key} <small style="color:#666">(/${e.unit})</small></span>
-      <input type="number" id="energy_${e.key}" placeholder="0" style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff">
-      <input type="date" id="energyDate_${e.key}" value="${new Date().toISOString().split('T')[0]}" style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff">
+      <input type="number" id="energy_${i}" placeholder="0" style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff">
+      <input type="date" id="energyDate_${i}" value="${new Date().toISOString().split('T')[0]}" style="padding:10px;border-radius:8px;border:1px solid #2a3a4a;background:#0f1923;color:#fff">
     </div>
   `).join("");
 }
 
 async function saveEnergy() {
   let ok = 0;
-  for (const e of ENERGY_TYPES) {
-    const price = parseFloat(document.getElementById("energy_"+e.key)?.value);
+  for (let i=0; i<ENERGY_TYPES.length; i++) {
+    const e = ENERGY_TYPES[i];
+    const price = parseFloat(document.getElementById("energy_"+i)?.value);
     if (!price) continue;
-    const effectiveDate = document.getElementById("energyDate_"+e.key)?.value;
+    const effectiveDate = document.getElementById("energyDate_"+i)?.value;
     const res = await fetch(`${API}/admin/energy`, {
       method:"POST", headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
       body: JSON.stringify({ fuel_type:e.key, price, unit:e.unit, effective_date:effectiveDate })
