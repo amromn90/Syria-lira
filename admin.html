@@ -375,19 +375,32 @@ async function saveRates() {
     sell: parseFloat(document.getElementById("sell_"+c)?.value)||null,
   })).filter(r => r.buy || r.sell);
 
+  if (rates.length === 0) {
+    showToast("❌ ما في أسعار للحفظ", true);
+    return;
+  }
+
   const bulletin = {
     number: document.getElementById("bulletinNumber")?.value || null,
     date:   document.getElementById("bulletinDate")?.value || null,
     url:    document.getElementById("bulletinUrl")?.value || null,
   };
 
-  const res = await fetch(`${API}/admin/rates`, {
-    method:"POST",
-    headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
-    body: JSON.stringify({rates, bulletin})
-  });
-  if (res.ok) showToast("✅ تم حفظ الأسعار والنشرة");
-  else showToast("❌ خطأ في الحفظ", true);
+  try {
+    const res = await fetch(`${API}/admin/rates`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Admin-Token":TOKEN},
+      body: JSON.stringify({rates, bulletin})
+    });
+    if (res.ok) {
+      showToast(`✅ تم حفظ ${rates.length} عملة`);
+    } else {
+      const err = await res.text();
+      showToast(`❌ خطأ ${res.status}: ${err.slice(0,50)}`, true);
+    }
+  } catch(e) {
+    showToast(`❌ خطأ في الاتصال: ${e.message}`, true);
+  }
 }
 
 // ─── Gold ────────────────────────────────────
