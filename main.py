@@ -223,24 +223,32 @@ class RatesUpdate(BaseModel):
 @app.post("/admin/rates")
 async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
     verify_token(request)
-    await db.execute("DELETE FROM rates")
-    for r in req.rates:
-        await db.execute(
-            "INSERT INTO rates (currency, buy, sell) VALUES ($1, $2, $3)",
-            r["currency"], r.get("buy"), r.get("sell")
-        )
-    # حفظ معلومات النشرة
+    try:
+        await db.execute("DELETE FROM rates")
+        for r in req.rates:
+            await db.execute(
+                "INSERT INTO rates (currency, buy, sell) VALUES ($1, $2, $3)",
+                r["currency"], 
+                float(r["buy"]) if r.get("buy") else None,
+                float(r["sell"]) if r.get("sell") else None
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"rates error: {str(e)}")
+
+    # حفظ النشرة بشكل منفصل - لو فشل ما يأثر على الأسعار
     if req.bulletin:
-        bulletin_date = None
-        if req.bulletin.date:
-            try:
-                bulletin_date = req.bulletin.date
-            except:
-                bulletin_date = None
-        await db.execute("""
-            INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
-            VALUES ($1, $2::date, $3)
-        """, req.bulletin.number, bulletin_date, req.bulletin.url)
+        try:
+            from datetime import date as date_type
+            b_date = None
+            if req.bulletin.date:
+                b_date = req.bulletin.date
+            await db.execute("""
+                INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
+                VALUES ($1, $2, $3)
+            """, req.bulletin.number or None, b_date or None, req.bulletin.url or None)
+        except Exception as e:
+            pass  # النشرة اختيارية - ما نوقف الحفظ بسببها
+
     return {"status": "ok"}
 
 # تحديث الذهب الرسمي
