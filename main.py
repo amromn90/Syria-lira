@@ -231,10 +231,16 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
         )
     # حفظ معلومات النشرة
     if req.bulletin:
+        bulletin_date = None
+        if req.bulletin.date:
+            try:
+                bulletin_date = req.bulletin.date
+            except:
+                bulletin_date = None
         await db.execute("""
             INSERT INTO bulletin_info (bulletin_number, bulletin_date, bulletin_url)
-            VALUES ($1, $2, $3)
-        """, req.bulletin.number, req.bulletin.date, req.bulletin.url)
+            VALUES ($1, $2::date, $3)
+        """, req.bulletin.number, bulletin_date, req.bulletin.url)
     return {"status": "ok"}
 
 # تحديث الذهب الرسمي
