@@ -53,6 +53,17 @@ async def startup():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # ═══ جدول أرشيف النشرات — يحفظ كل نشرة نُدخلها بدون استبدال القديمة ═══
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS rates_history (
+                id SERIAL PRIMARY KEY,
+                bulletin_no TEXT,
+                bulletin_date TEXT,
+                bulletin_url TEXT,
+                snapshot TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         # ═══ جدول الزيارات — نفس الهيكل الأصلي ═══
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS visits (
@@ -185,7 +196,34 @@ async def update_rates(req: RatesUpdate, request: Request, db=Depends(get_db)):
         VALUES ('cached', $1, NOW())
         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
     """, value_json)
+    # حفظ نسخة بالأرشيف - لا تُستبدل، تتراكم بمرور الوقت
+    await db.execute("""
+        INSERT INTO rates_history (bulletin_no, bulletin_date, bulletin_url, snapshot)
+        VALUES ($1, $2, $3, $4)
+    """, req.bulletin_no or None, req.date, req.bulletin_url or None, value_json)
     return {"status": "ok"}
+
+@app.get("/api/rates/history")
+async def get_rates_history(db=Depends(get_db)):
+    rows = await db.fetch("""
+        SELECT bulletin_no, bulletin_date, bulletin_url, snapshot, created_at
+        FROM rates_history ORDER BY created_at ASC
+    """)
+    result = []
+    for r in rows:
+        try:
+            snap = json.loads(r["snapshot"])
+        except Exception:
+            snap = {}
+        result.append({
+            "bulletin_no": r["bulletin_no"],
+            "date": r["bulletin_date"],
+            "bulletin_url": r["bulletin_url"],
+            "buy": snap.get("buy"),
+            "sell": snap.get("sell"),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return result
 
 # ═══════════════════════════════════════════
 # الزيارات — نفس الأصلي
